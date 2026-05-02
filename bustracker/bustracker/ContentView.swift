@@ -41,6 +41,9 @@ struct ContentView: View {
         case .needsProfile:
             NeedsProfileView()
 
+        case .unavailable(let message):
+            unavailableView(message: message)
+
         case .authenticated(let profile):
             switch profile.role {
             case .parent:
@@ -48,6 +51,42 @@ struct ContentView: View {
             case .driver:
                 DriverHomeView(profile: profile)
             }
+        }
+    }
+
+    private func unavailableView(message: String) -> some View {
+        ZStack {
+            Color.appBg.ignoresSafeArea()
+
+            VStack(spacing: 24) {
+                Image(systemName: "wifi.exclamationmark")
+                    .font(.system(size: 40, weight: .semibold))
+                    .foregroundStyle(Color.orange)
+
+                VStack(spacing: 8) {
+                    Text("Account data unavailable")
+                        .font(.title3.bold())
+                        .foregroundStyle(.white)
+
+                    Text(message)
+                        .font(.subheadline)
+                        .foregroundStyle(Color.appSecondary)
+                        .multilineTextAlignment(.center)
+                }
+
+                VStack(spacing: 12) {
+                    Button("Retry") {
+                        Task { await auth.refresh() }
+                    }
+                    .buttonStyle(NeonPrimaryButtonStyle())
+
+                    Button("Sign out") {
+                        Task { try? await auth.signOut() }
+                    }
+                    .buttonStyle(NeonOutlineButtonStyle())
+                }
+            }
+            .padding(24)
         }
     }
 }

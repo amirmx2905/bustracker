@@ -4,6 +4,7 @@ struct DriverHomeView: View {
     let profile: Profile
 
     @Environment(AuthViewModel.self) private var auth
+    @State private var showProfileEditor = false
 
     private var firstName: String {
         let formatter = PersonNameComponentsFormatter()
@@ -59,10 +60,24 @@ struct DriverHomeView: View {
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showProfileEditor = true
+                    } label: {
+                        Image(systemName: "person.crop.circle")
+                            .foregroundStyle(Color.neonBlue)
+                    }
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
                     Button("Sign out") {
                         Task { try? await auth.signOut() }
                     }
                     .foregroundStyle(Color.neonBlue)
+                }
+            }
+            .sheet(isPresented: $showProfileEditor) {
+                NavigationStack {
+                    ProfileEditorView(mode: .edit(profile))
                 }
             }
         }

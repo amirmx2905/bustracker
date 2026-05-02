@@ -8,6 +8,7 @@ final class AuthViewModel {
         case loading
         case unauthenticated
         case needsProfile
+        case unavailable(String)
         case authenticated(Profile)
     }
 
@@ -54,10 +55,9 @@ final class AuthViewModel {
             return
         }
         do {
-            let profile = try await SupabaseProfileService.fetchMyProfile()
-            appState = .authenticated(profile)
+            try await ensureProfileLoaded()
         } catch {
-            appState = .needsProfile
+            // `ensureProfileLoaded()` already set the appropriate state.
         }
     }
 
@@ -69,10 +69,11 @@ final class AuthViewModel {
         rememberForBiometric: Bool = false
     ) async throws {
         try await supabase.auth.signIn(email: email, password: password)
-        await refresh()
-        isBiometricLocked = false
+        try await ensureProfileLoaded()
 
-        if rememberForBiometric, BiometricService.canUseBiometrics() {
+        if rememberForBiometric,
+           BiometricService.canUseBiometrics(),
+           case .authenticated = appState {
             try? CredentialStore.save(email: email, password: password)
         }
     }
@@ -90,8 +91,7 @@ final class AuthViewModel {
             try? CredentialStore.delete()
             throw error
         }
-        await refresh()
-        isBiometricLocked = false
+        try await ensureProfileLoaded()
     }
 
     func signUpParent(
@@ -101,52 +101,81 @@ final class AuthViewModel {
         pickupAddress: String,
         pickupLabel: String
     ) async throws {
-        let (lat, lng, formatted) = try await Geocoder.geocode(pickupAddress)
-        let response = try await supabase.auth.signUp(email: email, password: password)
+        let draft = try await makeProfileDraft(
+            role: .parent,
+            fullName: fullName,
+            pickupAddress: pickupAddress,
+            pickupLabel: pickupLabel
+        )
+        let response = try await supabase.auth.signUp(
+            email: email,
+            password: password,
+            data: draft.signupMetadata
+        )
 
         guard response.session != nil else {
             throw AuthError.emailConfirmationRequired
         }
 
-        do {
-            try await SupabaseProfileService.createProfile(
-                role: .parent,
-                fullName: fullName,
-                pickupAddress: formatted,
-                pickupLabel: pickupLabel.isEmpty ? "Home" : pickupLabel,
-                lat: lat,
-                lng: lng
-            )
-        } catch {
-            try? await supabase.auth.signOut()
-            throw error
-        }
-        await refresh()
-        isBiometricLocked = false
+        try await ensureProfileLoaded(repairingMissingProfileWith: draft)
     }
 
     func signUpDriver(email: String, password: String, fullName: String) async throws {
-        let response = try await supabase.auth.signUp(email: email, password: password)
+        let draft = try await makeProfileDraft(
+            role: .driver,
+            fullName: fullName,
+            pickupAddress: nil,
+            pickupLabel: nil
+        )
+        let response = try await supabase.auth.signUp(
+            email: email,
+            password: password,
+            data: draft.signupMetadata
+        )
 
         guard response.session != nil else {
             throw AuthError.emailConfirmationRequired
         }
 
-        do {
-            try await SupabaseProfileService.createProfile(
-                role: .driver,
-                fullName: fullName,
-                pickupAddress: nil,
-                pickupLabel: nil,
-                lat: nil,
-                lng: nil
-            )
-        } catch {
-            try? await supabase.auth.signOut()
-            throw error
+        try await ensureProfileLoaded(repairingMissingProfileWith: draft)
+    }
+
+    func completeMissingProfile(
+        role: ProfileRole,
+        fullName: String,
+        pickupAddress: String?,
+        pickupLabel: String?
+    ) async throws {
+        let draft = try await makeProfileDraft(
+            role: role,
+            fullName: fullName,
+            pickupAddress: pickupAddress,
+            pickupLabel: pickupLabel
+        )
+        try await ensureProfileLoaded(repairingMissingProfileWith: draft)
+    }
+
+    func updateProfile(
+        fullName: String,
+        pickupAddress: String?,
+        pickupLabel: String?
+    ) async throws {
+        guard case .authenticated(let profile) = appState else {
+            throw AuthError.profileMissing
         }
-        await refresh()
-        isBiometricLocked = false
+
+        let draft = try await makeProfileDraft(
+            role: profile.role,
+            fullName: fullName,
+            pickupAddress: pickupAddress,
+            pickupLabel: pickupLabel
+        )
+        try await SupabaseProfileService.updateProfile(from: draft)
+        try await ensureProfileLoaded()
+    }
+
+    func resendSignupConfirmation(for email: String) async throws {
+        try await supabase.auth.resend(email: email, type: .signup)
     }
 
     func signOut() async throws {
@@ -156,5 +185,79 @@ final class AuthViewModel {
         // Saved credentials are intentionally preserved so the user can sign
         // back in with Face ID. They are biometric-protected in the Keychain,
         // and `save()` overwrites them when a different account signs in.
+    }
+
+    // MARK: - Helpers
+
+    private func makeProfileDraft(
+        role: ProfileRole,
+        fullName: String,
+        pickupAddress: String?,
+        pickupLabel: String?
+    ) async throws -> ProfileDraft {
+        let normalizedFullName = fullName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedPickupAddress = pickupAddress?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedPickupLabel = pickupLabel?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        switch role {
+        case .parent:
+            let (lat, lng, formatted) = try await Geocoder.geocode(normalizedPickupAddress ?? "")
+            return ProfileDraft(
+                role: .parent,
+                fullName: normalizedFullName,
+                pickupLabel: normalizedPickupLabel,
+                pickupAddress: formatted,
+                lat: lat,
+                lng: lng
+            )
+
+        case .driver:
+            return ProfileDraft(
+                role: .driver,
+                fullName: normalizedFullName,
+                pickupLabel: nil,
+                pickupAddress: nil,
+                lat: nil,
+                lng: nil
+            )
+        }
+    }
+
+    private func ensureProfileLoaded(
+        repairingMissingProfileWith draft: ProfileDraft? = nil
+    ) async throws {
+        do {
+            let profile = try await SupabaseProfileService.fetchMyProfile()
+            appState = .authenticated(profile)
+            isBiometricLocked = false
+        } catch AuthError.profileMissing {
+            guard let draft else {
+                appState = .needsProfile
+                isBiometricLocked = false
+                return
+            }
+
+            do {
+                try await SupabaseProfileService.createProfile(from: draft)
+            } catch {
+                if let repairedProfile = try? await SupabaseProfileService.fetchMyProfile() {
+                    appState = .authenticated(repairedProfile)
+                    isBiometricLocked = false
+                    return
+                }
+
+                appState = .unavailable(error.localizedDescription)
+                throw error
+            }
+
+            let profile = try await SupabaseProfileService.fetchMyProfile()
+            appState = .authenticated(profile)
+            isBiometricLocked = false
+        } catch {
+            appState = .unavailable(error.localizedDescription)
+            throw error
+        }
     }
 }

@@ -1,5 +1,5 @@
 import Foundation
-import CoreLocation
+import MapKit
 import Supabase
 
 // MARK: - Domain Models
@@ -25,12 +25,75 @@ struct Profile: Decodable {
     }
 }
 
+struct ProfileDraft {
+    let role: ProfileRole
+    let fullName: String
+    let pickupLabel: String?
+    let pickupAddress: String?
+    let lat: Double?
+    let lng: Double?
+
+    private var normalizedPickupLabel: String? {
+        guard role == .parent else { return nil }
+        if let pickupLabel, !pickupLabel.isEmpty {
+            return pickupLabel
+        }
+        return "Home"
+    }
+
+    private var pickupPointWKT: String? {
+        guard let lat, let lng else { return nil }
+        return "SRID=4326;POINT(\(lng) \(lat))"
+    }
+
+    var signupMetadata: [String: AnyJSON] {
+        var metadata: [String: AnyJSON] = [
+            "role": .string(role.rawValue),
+            "full_name": .string(fullName)
+        ]
+
+        if let pickupLabel = normalizedPickupLabel {
+            metadata["pickup_label"] = .string(pickupLabel)
+        }
+        if let pickupAddress {
+            metadata["pickup_address"] = .string(pickupAddress)
+        }
+        if let pickupPointWKT {
+            metadata["pickup_point"] = .string(pickupPointWKT)
+        }
+
+        return metadata
+    }
+
+    fileprivate var createPayload: ProfileInsertPayload {
+        ProfileInsertPayload(
+            id: UUID(),
+            role: role.rawValue,
+            full_name: fullName,
+            pickup_label: normalizedPickupLabel,
+            pickup_address: pickupAddress,
+            pickup_point: pickupPointWKT
+        )
+    }
+
+    fileprivate var updatePayload: ProfileUpdatePayload {
+        ProfileUpdatePayload(
+            role: role.rawValue,
+            full_name: fullName,
+            pickup_label: normalizedPickupLabel,
+            pickup_address: pickupAddress,
+            pickup_point: pickupPointWKT
+        )
+    }
+}
+
 // MARK: - Errors
 
 enum AuthError: LocalizedError {
     case addressNotFound
     case geocodingFailed(Error)
     case emailConfirmationRequired
+    case profileMissing
 
     var errorDescription: String? {
         switch self {
@@ -40,6 +103,8 @@ enum AuthError: LocalizedError {
             "Error verifying address: \(e.localizedDescription)"
         case .emailConfirmationRequired:
             "Check your email and confirm your account, then sign in."
+        case .profileMissing:
+            "Your account is missing its profile. Complete it to continue."
         }
     }
 }
@@ -55,40 +120,57 @@ private struct ProfileInsertPayload: Encodable {
     let pickup_point: String? // WKT "SRID=4326;POINT(lng lat)"
 }
 
+private struct ProfileUpdatePayload: Encodable {
+    let role: String
+    let full_name: String
+    let pickup_label: String?
+    let pickup_address: String?
+    let pickup_point: String?
+}
+
 enum SupabaseProfileService {
     static func fetchMyProfile() async throws -> Profile {
-        try await supabase
+        let session = try await supabase.auth.session
+        let profiles: [Profile] = try await supabase
             .from("profiles")
             .select("id, role, full_name, pickup_label, pickup_address")
-            .single()
+            .eq("id", value: session.user.id)
+            .limit(1)
             .execute()
             .value
+
+        guard let profile = profiles.first else {
+            throw AuthError.profileMissing
+        }
+
+        return profile
     }
 
-    static func createProfile(
-        role: ProfileRole,
-        fullName: String,
-        pickupAddress: String?,
-        pickupLabel: String?,
-        lat: Double?,
-        lng: Double?
-    ) async throws {
+    static func createProfile(from draft: ProfileDraft) async throws {
         let session = try await supabase.auth.session
-        let wkt: String? = {
-            guard let lat, let lng else { return nil }
-            return "SRID=4326;POINT(\(lng) \(lat))"
-        }()
-        let payload = ProfileInsertPayload(
+        var payload = draft.createPayload
+        payload = ProfileInsertPayload(
             id: session.user.id,
-            role: role.rawValue,
-            full_name: fullName,
-            pickup_label: pickupLabel,
-            pickup_address: pickupAddress,
-            pickup_point: wkt
+            role: payload.role,
+            full_name: payload.full_name,
+            pickup_label: payload.pickup_label,
+            pickup_address: payload.pickup_address,
+            pickup_point: payload.pickup_point
         )
+
         _ = try await supabase
             .from("profiles")
             .insert(payload)
+            .execute()
+    }
+
+    static func updateProfile(from draft: ProfileDraft) async throws {
+        let session = try await supabase.auth.session
+
+        _ = try await supabase
+            .from("profiles")
+            .update(draft.updatePayload)
+            .eq("id", value: session.user.id)
             .execute()
     }
 }
@@ -97,25 +179,32 @@ enum SupabaseProfileService {
 
 enum Geocoder {
     static func geocode(_ address: String) async throws -> (lat: Double, lng: Double, formatted: String) {
-        try await withCheckedThrowingContinuation { continuation in
-            CLGeocoder().geocodeAddressString(address) { placemarks, error in
-                if let error {
-                    continuation.resume(throwing: AuthError.geocodingFailed(error))
-                    return
-                }
-                guard let placemark = placemarks?.first, let location = placemark.location else {
-                    continuation.resume(throwing: AuthError.addressNotFound)
-                    return
-                }
-                let parts = [placemark.thoroughfare, placemark.locality, placemark.administrativeArea]
-                    .compactMap { $0 }
-                let formatted = parts.isEmpty ? address : parts.joined(separator: ", ")
-                continuation.resume(returning: (
-                    lat: location.coordinate.latitude,
-                    lng: location.coordinate.longitude,
-                    formatted: formatted
-                ))
+        guard let request = MKGeocodingRequest(addressString: address) else {
+            throw AuthError.addressNotFound
+        }
+
+        do {
+            let mapItems = try await request.mapItems
+
+            guard let mapItem = mapItems.first else {
+                throw AuthError.addressNotFound
             }
+
+            let coordinate = mapItem.location.coordinate
+            let formatted = mapItem.addressRepresentations?
+                .fullAddress(includingRegion: true, singleLine: true)
+                ?? mapItem.name
+                ?? address
+
+            return (
+                lat: coordinate.latitude,
+                lng: coordinate.longitude,
+                formatted: formatted
+            )
+        } catch let error as AuthError {
+            throw error
+        } catch {
+            throw AuthError.geocodingFailed(error)
         }
     }
 }

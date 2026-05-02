@@ -2,10 +2,12 @@ import SwiftUI
 
 struct BiometricLockView: View {
     @Environment(AuthViewModel.self) private var auth
+    @Environment(\.scenePhase) private var scenePhase
 
     @State private var isAuthenticating = false
     @State private var errorMessage: String?
     @State private var hasAutoPrompted = false
+    @State private var autoRetryCount = 0
 
     private let biometric: BiometricType = BiometricService.availableBiometric()
 
@@ -30,10 +32,13 @@ struct BiometricLockView: View {
             }
             .padding(.bottom, 32)
         }
-        .task {
-            guard !hasAutoPrompted else { return }
-            hasAutoPrompted = true
-            await authenticate()
+        .task(id: scenePhase) {
+            guard scenePhase == .active else {
+                hasAutoPrompted = false
+                autoRetryCount = 0
+                return
+            }
+            await maybeAutoAuthenticate()
         }
     }
 
@@ -107,7 +112,22 @@ struct BiometricLockView: View {
 
     // MARK: - Action
 
-    private func authenticate() async {
+    private func maybeAutoAuthenticate() async {
+        guard scenePhase == .active, !hasAutoPrompted, !isAuthenticating, biometric != .none else {
+            return
+        }
+
+        try? await Task.sleep(nanoseconds: 150_000_000)
+
+        guard scenePhase == .active, !hasAutoPrompted, !isAuthenticating, biometric != .none else {
+            return
+        }
+
+        hasAutoPrompted = true
+        await authenticate(triggeredAutomatically: true)
+    }
+
+    private func authenticate(triggeredAutomatically: Bool = false) async {
         guard !isAuthenticating, biometric != .none else { return }
         isAuthenticating = true
         defer { isAuthenticating = false }
@@ -117,9 +137,18 @@ struct BiometricLockView: View {
             try await BiometricService.authenticate(
                 reason: "Unlock BusTracker to access your account."
             )
+            autoRetryCount = 0
             auth.unlock()
         } catch BiometricError.userCancel {
             return
+        } catch BiometricError.transient {
+            if triggeredAutomatically, autoRetryCount < 1 {
+                autoRetryCount += 1
+                hasAutoPrompted = false
+                await maybeAutoAuthenticate()
+                return
+            }
+            errorMessage = BiometricError.transient.localizedDescription
         } catch {
             errorMessage = error.localizedDescription
         }

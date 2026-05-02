@@ -35,6 +35,7 @@ enum BiometricError: LocalizedError, Equatable {
     case notEnrolled
     case lockout
     case userCancel
+    case transient
     case failed
     case unknown
 
@@ -44,6 +45,7 @@ enum BiometricError: LocalizedError, Equatable {
         case .notEnrolled:  return "Set up Face ID or Touch ID in Settings to continue."
         case .lockout:      return "Biometrics locked. Unlock with your passcode."
         case .userCancel:   return "Authentication cancelled."
+        case .transient:    return "Face ID is temporarily unavailable. Try again."
         case .failed:       return "Authentication failed. Please try again."
         case .unknown:      return "An unexpected error occurred."
         }
@@ -117,8 +119,10 @@ enum BiometricService {
             return .notEnrolled
         case .biometryLockout:
             return .lockout
-        case .userCancel, .appCancel, .systemCancel:
+        case .userCancel:
             return .userCancel
+        case .appCancel, .systemCancel, .invalidContext, .notInteractive:
+            return .transient
         case .authenticationFailed, .userFallback, .passcodeNotSet:
             return .failed
         default:
