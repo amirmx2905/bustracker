@@ -8,6 +8,9 @@ struct ParentHomeView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var showProfileEditor = false
+    @State private var showStudentCreator = false
+    @State private var showLinkStudent = false
+    @State private var selectedStudent: StudentDirectoryEntry?
 
     private var firstName: String {
         let formatter = PersonNameComponentsFormatter()
@@ -15,6 +18,10 @@ struct ParentHomeView: View {
             return PersonNameComponentsFormatter.localizedString(from: components, style: .short)
         }
         return profile.fullName
+    }
+
+    private var destinationCount: Int {
+        students.reduce(0) { $0 + $1.destinations.count }
     }
 
     var body: some View {
@@ -49,7 +56,9 @@ struct ParentHomeView: View {
                             .foregroundStyle(.white)
 
                         ForEach(students) { entry in
-                            StudentCard(entry: entry)
+                            StudentCard(entry: entry) {
+                                selectedStudent = entry
+                            }
                         }
                     }
                 }
@@ -82,6 +91,33 @@ struct ParentHomeView: View {
                 }
 
                 ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button {
+                            showStudentCreator = true
+                        } label: {
+                            Label("Register student", systemImage: "person.badge.plus")
+                        }
+
+                        Button {
+                            showLinkStudent = true
+                        } label: {
+                            Label("Link by NFC", systemImage: "wave.3.right.circle")
+                        }
+
+                        Divider()
+
+                        Button(role: .destructive) {
+                            Task { try? await auth.signOut() }
+                        } label: {
+                            Label("Sign out", systemImage: "rectangle.portrait.and.arrow.right")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .foregroundStyle(Color.neonBlue)
+                    }
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         showProfileEditor = true
                     } label: {
@@ -89,17 +125,31 @@ struct ParentHomeView: View {
                             .foregroundStyle(Color.neonBlue)
                     }
                 }
-
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Sign out") {
-                        Task { try? await auth.signOut() }
-                    }
-                    .foregroundStyle(Color.neonBlue)
-                }
             }
             .sheet(isPresented: $showProfileEditor) {
                 NavigationStack {
                     ProfileEditorView(mode: .edit(profile))
+                }
+            }
+            .sheet(isPresented: $showStudentCreator) {
+                NavigationStack {
+                    StudentEditorView(mode: .create) {
+                        await loadStudents()
+                    }
+                }
+            }
+            .sheet(isPresented: $showLinkStudent) {
+                NavigationStack {
+                    LinkStudentView {
+                        await loadStudents()
+                    }
+                }
+            }
+            .sheet(item: $selectedStudent) { entry in
+                NavigationStack {
+                    StudentEditorView(mode: .edit(entry)) {
+                        await loadStudents()
+                    }
                 }
             }
             .task {
@@ -121,6 +171,7 @@ struct ParentHomeView: View {
 
             HStack(spacing: 12) {
                 statPill(title: "Students", value: "\(students.count)")
+                statPill(title: "Stops", value: "\(destinationCount)")
                 statPill(title: "Status", value: isLoading ? "Syncing" : "Ready")
             }
         }
@@ -164,17 +215,25 @@ struct ParentHomeView: View {
                 .font(.headline)
                 .foregroundStyle(.white)
 
-            Text("Phase 2 needs demo rows in students, student_parents, and destinations before this screen can populate.")
+            Text("Register a student from this account or link an existing student by scanning their NFC tag.")
                 .font(.subheadline)
                 .foregroundStyle(Color.appSecondary)
 
-            Button {
-                Task { await loadStudents() }
-            } label: {
-                Text("Check again")
+            HStack(spacing: 12) {
+                Button {
+                    showStudentCreator = true
+                } label: {
+                    Text("Register student")
+                }
+                .buttonStyle(NeonPrimaryButtonStyle())
+
+                Button {
+                    showLinkStudent = true
+                } label: {
+                    Text("Link by NFC")
+                }
+                .buttonStyle(NeonOutlineButtonStyle())
             }
-            .buttonStyle(NeonOutlineButtonStyle())
-            .disabled(isLoading)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(20)
@@ -191,9 +250,9 @@ struct ParentHomeView: View {
             return "Refreshing the students linked to your account."
         }
         if students.isEmpty {
-            return "Your linked students will appear here once the Phase 2 demo data is seeded."
+            return "This is now the operational parent workspace for creating, linking, and managing students."
         }
-        return "You can now verify that this account only reads its assigned students and destinations."
+        return "Manage student profiles, confirm NFC links, and keep destination data current from here."
     }
 
     private func statPill(title: String, value: String) -> some View {
@@ -227,6 +286,7 @@ struct ParentHomeView: View {
 
 private struct StudentCard: View {
     let entry: StudentDirectoryEntry
+    let onManage: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -236,8 +296,12 @@ private struct StudentCard: View {
                         .font(.headline)
                         .foregroundStyle(.white)
 
-                    Text("Born \(entry.student.dateOfBirth)")
+                    Text("Born \(entry.student.birthDateDisplay)")
                         .font(.subheadline)
+                        .foregroundStyle(Color.appSecondary)
+
+                    Text("Tag \(entry.student.nfcUID)")
+                        .font(.caption)
                         .foregroundStyle(Color.appSecondary)
                 }
 
@@ -254,11 +318,18 @@ private struct StudentCard: View {
 
             infoRow(icon: "figure.walk", label: "Pickup", value: entry.student.pickupAddress)
 
-            if let destination = entry.primaryDestination {
-                infoRow(icon: "flag.checkered", label: destination.label, value: destination.address)
-            } else {
+            if entry.destinations.isEmpty {
                 infoRow(icon: "flag.slash", label: "Destination", value: "No destination has been assigned yet.")
+            } else {
+                ForEach(entry.destinations) { destination in
+                    infoRow(icon: "flag.checkered", label: destination.label, value: destination.address)
+                }
             }
+
+            Button("Manage student") {
+                onManage()
+            }
+            .buttonStyle(NeonOutlineButtonStyle())
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
