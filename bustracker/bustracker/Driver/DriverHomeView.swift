@@ -39,11 +39,11 @@ struct DriverHomeView: View {
                     .accessibilityHidden(true)
 
                     VStack(spacing: 8) {
-                        Text("Hola, \(firstName)")
+                        Text("Hi, \(firstName)")
                             .font(.title2.bold())
                             .foregroundStyle(.white)
 
-                        Text("Aquí podrás iniciar un viaje\ny escanear los NFC de los estudiantes.")
+                        Text("Here you'll start trips\nand scan student NFCs.")
                             .font(.subheadline)
                             .foregroundStyle(Color.appSecondary)
                             .multilineTextAlignment(.center)
@@ -53,13 +53,13 @@ struct DriverHomeView: View {
                 }
                 .padding()
             }
-            .navigationTitle("BusTracker — Conductor")
+            .navigationTitle("BusTracker — Driver")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(Color.appBg, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Cerrar sesión") {
+                    Button("Sign out") {
                         Task { try? await auth.signOut() }
                     }
                     .foregroundStyle(Color.neonBlue)

@@ -39,11 +39,11 @@ struct ParentHomeView: View {
                     .accessibilityHidden(true)
 
                     VStack(spacing: 8) {
-                        Text("Hola, \(firstName)")
+                        Text("Hi, \(firstName)")
                             .font(.title2.bold())
                             .foregroundStyle(.white)
 
-                        Text("Aquí aparecerá el mapa en vivo\ncuando tu hijo esté a bordo.")
+                        Text("The live map will appear here\nwhen your child is on board.")
                             .font(.subheadline)
                             .foregroundStyle(Color.appSecondary)
                             .multilineTextAlignment(.center)
@@ -59,7 +59,7 @@ struct ParentHomeView: View {
             .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("Cerrar sesión") {
+                    Button("Sign out") {
                         Task { try? await auth.signOut() }
                     }
                     .foregroundStyle(Color.neonBlue)

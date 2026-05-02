@@ -27,17 +27,17 @@ struct NeedsProfileView: View {
                 .accessibilityHidden(true)
 
                 VStack(spacing: 10) {
-                    Text("Perfil incompleto")
+                    Text("Profile incomplete")
                         .font(.title2.bold())
                         .foregroundStyle(.white)
 
-                    Text("Tu cuenta existe pero no tiene perfil.\nCierra sesión e intenta registrarte de nuevo.")
+                    Text("Your account exists but has no profile.\nSign out and try registering again.")
                         .font(.subheadline)
                         .foregroundStyle(Color.appSecondary)
                         .multilineTextAlignment(.center)
                 }
 
-                Button("Cerrar sesión") {
+                Button("Sign out") {
                     Task { try? await auth.signOut() }
                 }
                 .buttonStyle(NeonOutlineButtonStyle())

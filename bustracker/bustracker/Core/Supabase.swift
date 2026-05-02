@@ -35,11 +35,11 @@ enum AuthError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .addressNotFound:
-            "No se encontró la dirección. Intenta ser más específico."
+            "Address not found. Try being more specific."
         case .geocodingFailed(let e):
-            "Error al verificar la dirección: \(e.localizedDescription)"
+            "Error verifying address: \(e.localizedDescription)"
         case .emailConfirmationRequired:
-            "Revisa tu correo y confirma tu cuenta, luego inicia sesión."
+            "Check your email and confirm your account, then sign in."
         }
     }
 }

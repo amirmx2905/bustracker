@@ -41,7 +41,7 @@ struct SignUpView: View {
                 if isParent { pickupSection }
                 if passwordMismatch {
                     InlineMessage(
-                        message: "Las contraseñas no coinciden.",
+                        message: "Passwords don't match.",
                         color: .orange,
                         icon: "exclamationmark.triangle.fill"
                     )
@@ -58,16 +58,16 @@ struct SignUpView: View {
         .background(Color.appBg.ignoresSafeArea())
         .scrollDismissesKeyboard(.interactively)
         .scrollBounceBehavior(.basedOnSize)
-        .navigationTitle(isParent ? "Registro de responsable" : "Registro de conductor")
+        .navigationTitle(isParent ? "Parent sign-up" : "Driver sign-up")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
         .toolbarBackground(Color.appBg, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .disabled(isBusy)
-        .alert("Confirma tu correo", isPresented: $showEmailConfirmationAlert) {
-            Button("Entendido", role: .cancel) { }
+        .alert("Confirm your email", isPresented: $showEmailConfirmationAlert) {
+            Button("Got it", role: .cancel) { }
         } message: {
-            Text("Te enviamos un correo de confirmación. Una vez que confirmes tu cuenta, inicia sesión.")
+            Text("We sent you a confirmation email. Once you confirm your account, sign in.")
         }
     }
 
@@ -75,10 +75,10 @@ struct SignUpView: View {
 
     private var accountSection: some View {
         VStack(alignment: .leading, spacing: 16) {
-            FormSectionLabel(text: "Tus datos")
+            FormSectionLabel(text: "Your details")
 
             VStack(spacing: 12) {
-                labeledField("Nombre completo") {
+                labeledField("Full name") {
                     TextField("", text: $fullName)
                         .textContentType(.name)
                         .focused($focus, equals: .fullName)
@@ -86,7 +86,7 @@ struct SignUpView: View {
                         .neonInput(focused: focus == .fullName)
                 }
 
-                labeledField("Correo electrónico") {
+                labeledField("Email") {
                     TextField("", text: $email)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -97,7 +97,7 @@ struct SignUpView: View {
                         .neonInput(focused: focus == .email)
                 }
 
-                labeledField("Contraseña (mín. 6 caracteres)") {
+                labeledField("Password (min. 6 characters)") {
                     SecureField("", text: $password)
                         .textContentType(.newPassword)
                         .focused($focus, equals: .password)
@@ -105,7 +105,7 @@ struct SignUpView: View {
                         .neonInput(focused: focus == .password)
                 }
 
-                labeledField("Confirmar contraseña") {
+                labeledField("Confirm password") {
                     SecureField("", text: $confirmPassword)
                         .textContentType(.newPassword)
                         .focused($focus, equals: .confirmPassword)
@@ -120,17 +120,17 @@ struct SignUpView: View {
 
     private var pickupSection: some View {
         VStack(alignment: .leading, spacing: 16) {
-            FormSectionLabel(text: "Parada de recogida")
+            FormSectionLabel(text: "Pickup stop")
 
             VStack(spacing: 12) {
-                labeledField("Dirección") {
+                labeledField("Address") {
                     TextField("", text: $pickupAddress)
                         .focused($focus, equals: .pickupAddress)
                         .onSubmit { focus = .pickupLabel }
                         .neonInput(focused: focus == .pickupAddress)
                 }
 
-                labeledField("Etiqueta (ej. Casa, Trabajo)") {
+                labeledField("Label (e.g. Home, Work)") {
                     TextField("", text: $pickupLabel)
                         .focused($focus, equals: .pickupLabel)
                         .onSubmit { focus = nil }
@@ -138,7 +138,7 @@ struct SignUpView: View {
                 }
             }
 
-            Text("Recibirás una notificación cuando el bus esté cerca de esta dirección.")
+            Text("You'll get a notification when the bus is near this address.")
                 .font(.caption)
                 .foregroundStyle(Color.appSecondary)
         }
@@ -155,7 +155,7 @@ struct SignUpView: View {
                     ProgressView()
                         .tint(.white)
                 }
-                Text(isBusy ? "Creando cuenta…" : "Crear cuenta")
+                Text(isBusy ? "Creating account…" : "Create account")
             }
         }
         .buttonStyle(NeonPrimaryButtonStyle())

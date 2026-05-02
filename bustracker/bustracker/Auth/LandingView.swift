@@ -59,7 +59,7 @@ struct LandingView: View {
                 .font(.system(size: 38, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
 
-            Text("Sigue el camino de tu hijo\nen tiempo real.")
+            Text("Track your child's journey\nin real time.")
                 .font(.subheadline)
                 .foregroundStyle(Color.appSecondary)
                 .multilineTextAlignment(.center)
@@ -70,7 +70,7 @@ struct LandingView: View {
 
     private var rolePicker: some View {
         VStack(spacing: 14) {
-            Text("¿Cuál es tu rol?")
+            Text("What's your role?")
                 .font(.caption)
                 .fontWeight(.semibold)
                 .foregroundStyle(Color.appSecondary)
@@ -78,8 +78,8 @@ struct LandingView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             roleCard(
-                title: "Soy responsable",
-                subtitle: "Recibe notificaciones del trayecto",
+                title: "I'm a parent",
+                subtitle: "Get trip notifications",
                 icon: "person.2.fill",
                 isPrimary: true
             ) {
@@ -87,8 +87,8 @@ struct LandingView: View {
             }
 
             roleCard(
-                title: "Soy conductor",
-                subtitle: "Opera viajes y escanea NFC",
+                title: "I'm a driver",
+                subtitle: "Run trips and scan NFC",
                 icon: "car.fill",
                 isPrimary: false
             ) {
@@ -100,7 +100,7 @@ struct LandingView: View {
     // MARK: - Sign In Link
 
     private var signInLink: some View {
-        Button("¿Ya tienes cuenta? Inicia sesión") {
+        Button("Already have an account? Sign in") {
             path.append(Destination.signIn)
         }
         .font(.subheadline)
