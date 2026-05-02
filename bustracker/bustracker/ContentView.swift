@@ -1,24 +1,38 @@
-//
-//  ContentView.swift
-//  bustracker
-//
-//  Created by Amir Sebastián Flores Cardona on 28/04/26.
-//
-
 import SwiftUI
 
 struct ContentView: View {
-    var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
-        }
-        .padding()
-    }
-}
+    @State private var auth = AuthViewModel()
 
-#Preview {
-    ContentView()
+    var body: some View {
+        rootView
+            .environment(auth)
+            .preferredColorScheme(.dark)
+            .tint(.neonBlue)
+    }
+
+    @ViewBuilder
+    private var rootView: some View {
+        switch auth.appState {
+        case .loading:
+            ZStack {
+                Color.appBg.ignoresSafeArea()
+                ProgressView()
+                    .tint(.neonBlue)
+            }
+
+        case .unauthenticated:
+            LandingView()
+
+        case .needsProfile:
+            NeedsProfileView()
+
+        case .authenticated(let profile):
+            switch profile.role {
+            case .parent:
+                ParentHomeView(profile: profile)
+            case .driver:
+                DriverHomeView(profile: profile)
+            }
+        }
+    }
 }
