@@ -15,18 +15,19 @@ Use `bustracker/bustracker/.env.example` as the template for local setup.
 
 Run these scripts in order against the Supabase project:
 
-1. `supabase/sql/phase2_schema.sql`
-2. `supabase/sql/phase2_auth_profile_sync.sql`
-3. `supabase/sql/phase3_students_and_relationships.sql`
+1. `supabase/sql/schema.sql`
+2. `supabase/sql/auth_sync.sql`
+3. `supabase/sql/functions.sql`
 
-The phase 3 script adds the RPC-backed student write path used by the parent app flow for student registration, NFC linking, destination management, and archive behavior.
-If phase 3 was already applied before the duplicate-hardening changes, rerun `supabase/sql/phase3_students_and_relationships.sql` to install the new student-identity and destination uniqueness guards.
+`schema.sql` defines the tables, indexes, RLS, and a server-generated QR code on `students.qr_code` (default `uuid_generate_v4()::text`). `auth_sync.sql` installs the `auth.users` trigger that syncs profile metadata into `public.profiles` on signup. `functions.sql` adds the RPC-backed student write path used by the parent app for registration, QR linking, destination management, and archiving.
 
-## Phase 3 app flow
+## Parent app flow
 
-After the SQL is applied and a parent account is created in the app, the parent home screen can:
+After the SQL is applied and a parent account is created, the parent home screen can:
 
-1. Register a new student with an NFC tag, pickup address, and at least one destination
-2. Link an existing student by scanning or entering the student's NFC UID
+1. Register a new student with pickup address and at least one destination — the server generates a unique QR code which the app immediately displays for screenshot/share/print
+2. Link an existing student by scanning the QR from a co-parent's phone or pasting the code manually
 3. Edit student details and manage destinations
 4. Archive a student instead of hard-deleting the record
+
+The driver app will scan the same QR codes to check students in and out (future phase).

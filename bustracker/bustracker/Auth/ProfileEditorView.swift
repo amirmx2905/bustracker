@@ -14,16 +14,12 @@ struct ProfileEditorView: View {
 
     @State private var role: ProfileRole
     @State private var fullName: String
-    @State private var pickupAddress: String
-    @State private var pickupLabel: String
     @State private var isBusy = false
     @State private var errorMessage: String?
     @FocusState private var focus: Field?
 
     private enum Field: Hashable {
         case fullName
-        case pickupAddress
-        case pickupLabel
     }
 
     init(mode: Mode, showsSignOut: Bool = false) {
@@ -34,19 +30,11 @@ struct ProfileEditorView: View {
         case .complete(let defaultRole):
             _role = State(initialValue: defaultRole)
             _fullName = State(initialValue: "")
-            _pickupAddress = State(initialValue: "")
-            _pickupLabel = State(initialValue: "")
 
         case .edit(let profile):
             _role = State(initialValue: profile.role)
             _fullName = State(initialValue: profile.fullName)
-            _pickupAddress = State(initialValue: profile.pickupAddress ?? "")
-            _pickupLabel = State(initialValue: profile.pickupLabel ?? "")
         }
-    }
-
-    private var isParent: Bool {
-        role == .parent
     }
 
     private var allowsRoleSelection: Bool {
@@ -68,9 +56,9 @@ struct ProfileEditorView: View {
     private var subtitle: String {
         switch mode {
         case .complete:
-            return "Your account exists, but it still needs the profile data required for routing and pickup notifications."
+            return "Your account exists, but it still needs your name and role to continue."
         case .edit:
-            return "Keep your account details current so routing and pickup notifications stay accurate."
+            return "Keep your account details current."
         }
     }
 
@@ -85,7 +73,6 @@ struct ProfileEditorView: View {
 
     private var isFormValid: Bool {
         !fullName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && (!isParent || !pickupAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
     var body: some View {
@@ -168,34 +155,12 @@ struct ProfileEditorView: View {
         VStack(alignment: .leading, spacing: 16) {
             FormSectionLabel(text: "Profile details")
 
-            VStack(spacing: 12) {
-                labeledField("Full name") {
-                    TextField("", text: $fullName)
-                        .textContentType(.name)
-                        .focused($focus, equals: .fullName)
-                        .onSubmit { focus = isParent ? .pickupAddress : nil }
-                        .neonInput(focused: focus == .fullName)
-                }
-
-                if isParent {
-                    labeledField("Pickup address") {
-                        TextField("", text: $pickupAddress)
-                            .focused($focus, equals: .pickupAddress)
-                            .onSubmit { focus = .pickupLabel }
-                            .neonInput(focused: focus == .pickupAddress)
-                    }
-
-                    labeledField("Pickup label") {
-                        TextField("", text: $pickupLabel)
-                            .focused($focus, equals: .pickupLabel)
-                            .onSubmit { focus = nil }
-                            .neonInput(focused: focus == .pickupLabel)
-                    }
-
-                    Text("This address is geocoded before it is saved, so be specific enough to locate the pickup point.")
-                        .font(.caption)
-                        .foregroundStyle(Color.appSecondary)
-                }
+            labeledField("Full name") {
+                TextField("", text: $fullName)
+                    .textContentType(.name)
+                    .focused($focus, equals: .fullName)
+                    .onSubmit { focus = nil }
+                    .neonInput(focused: focus == .fullName)
             }
         }
     }
@@ -209,7 +174,7 @@ struct ProfileEditorView: View {
                     ProgressView()
                         .tint(.white)
                 }
-                Text(isBusy ? "Saving…" : submitTitle)
+                Text(isBusy ? "Saving..." : submitTitle)
             }
         }
         .buttonStyle(NeonPrimaryButtonStyle())
@@ -240,22 +205,15 @@ struct ProfileEditorView: View {
         isBusy = true
         defer { isBusy = false }
 
+        let trimmedFullName = fullName.trimmingCharacters(in: .whitespacesAndNewlines)
+
         do {
             switch mode {
             case .complete:
-                try await auth.completeMissingProfile(
-                    role: role,
-                    fullName: fullName.trimmingCharacters(in: .whitespacesAndNewlines),
-                    pickupAddress: isParent ? pickupAddress.trimmingCharacters(in: .whitespacesAndNewlines) : nil,
-                    pickupLabel: isParent ? pickupLabel.trimmingCharacters(in: .whitespacesAndNewlines) : nil
-                )
+                try await auth.completeMissingProfile(role: role, fullName: trimmedFullName)
 
             case .edit:
-                try await auth.updateProfile(
-                    fullName: fullName.trimmingCharacters(in: .whitespacesAndNewlines),
-                    pickupAddress: isParent ? pickupAddress.trimmingCharacters(in: .whitespacesAndNewlines) : nil,
-                    pickupLabel: isParent ? pickupLabel.trimmingCharacters(in: .whitespacesAndNewlines) : nil
-                )
+                try await auth.updateProfile(fullName: trimmedFullName)
                 dismiss()
             }
         } catch {

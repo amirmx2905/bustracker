@@ -3,7 +3,7 @@ import Supabase
 
 struct StudentRecord: Decodable, Identifiable {
     let id: UUID
-    let nfcUID: String
+    let qrCode: String
     let fullName: String
     let dateOfBirth: String
     let pickupAddress: String
@@ -11,7 +11,7 @@ struct StudentRecord: Decodable, Identifiable {
 
     enum CodingKeys: String, CodingKey {
         case id
-        case nfcUID = "nfc_uid"
+        case qrCode = "qr_code"
         case fullName = "full_name"
         case dateOfBirth = "date_of_birth"
         case pickupAddress = "pickup_address"
@@ -50,17 +50,28 @@ struct StudentDirectoryEntry: Identifiable {
     var primaryDestination: DestinationRecord? { destinations.first }
 }
 
+struct CoordinatePair: Equatable {
+    var latitude: Double
+    var longitude: Double
+}
+
 struct EditableDestination: Identifiable, Equatable {
     let id: UUID
     let destinationID: UUID?
     var label: String
+    /// Address text shown to the user. Filled in by the location picker for new destinations,
+    /// or by the DB load for existing ones.
     var address: String
+    /// Coordinates of the user-picked map pin. nil for existing destinations whose pin has not
+    /// been re-picked in this edit session.
+    var coordinate: CoordinatePair?
 
-    init(destinationID: UUID? = nil, label: String = "", address: String = "") {
+    init(destinationID: UUID? = nil, label: String = "", address: String = "", coordinate: CoordinatePair? = nil) {
         self.id = UUID()
         self.destinationID = destinationID
         self.label = label
         self.address = address
+        self.coordinate = coordinate
     }
 
     init(record: DestinationRecord) {
@@ -68,20 +79,34 @@ struct EditableDestination: Identifiable, Equatable {
         self.destinationID = record.id
         self.label = record.label
         self.address = record.address
+        self.coordinate = nil
+    }
+
+    var hasLocation: Bool {
+        !address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
 
 struct StudentEditorInput {
-    let nfcUID: String
     let fullName: String
     let dateOfBirth: Date
+    /// Pickup address text. For an unchanged existing student, this is the saved address.
+    /// For a freshly picked location, it is the reverse-geocoded address from the picker.
     let pickupAddress: String
+    /// Coordinates of the freshly picked pickup pin. nil when editing a student whose pickup
+    /// hasn't been re-picked in this session.
+    let pickupCoordinate: CoordinatePair?
     let destinations: [EditableDestination]
 }
 
+struct CreatedStudent {
+    let id: UUID
+    let qrCode: String
+}
+
 enum StudentManagementError: LocalizedError {
-    case nfcUIDRequired
-    case duplicateNFCUID
+    case qrCodeRequired
+    case qrCodeNotFound
     case fullNameRequired
     case pickupAddressRequired
     case destinationRequired
@@ -93,10 +118,10 @@ enum StudentManagementError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .nfcUIDRequired:
-            return "Scan an NFC tag before saving the student."
-        case .duplicateNFCUID:
-            return "This NFC tag is already linked to another active student."
+        case .qrCodeRequired:
+            return "Scan or enter a QR code before linking the student."
+        case .qrCodeNotFound:
+            return "No active student matches that QR code."
         case .fullNameRequired:
             return "Student name is required."
         case .pickupAddressRequired:
@@ -106,11 +131,11 @@ enum StudentManagementError: LocalizedError {
         case .destinationIncomplete:
             return "Every destination needs both a label and an address."
         case .duplicateStudent:
-            return "An active student with the same name and date of birth already exists. Use Link by NFC or manage the existing student instead."
+            return "An active student with the same name and date of birth already exists. Use Link by QR or manage the existing student instead."
         case .duplicateDestination:
             return "This student already has that destination. Remove the duplicate or change its label/address."
         case .databaseUpdateRequired:
-            return "The database is missing the latest Phase 3 duplicate protections. Rerun supabase/sql/phase3_students_and_relationships.sql and try again."
+            return "The database is missing the latest QR-aware RPCs. Re-run supabase/sql/functions.sql and try again."
         case .createdStudentMissing:
             return "The student was created, but the app could not refresh its data. Pull to refresh and try again."
         }
@@ -138,7 +163,6 @@ private enum StudentDateCodec {
 }
 
 private struct CreateStudentParams: Encodable {
-    let studentNFCUID: String
     let studentFullName: String
     let studentDateOfBirth: String
     let studentPickupAddress: String
@@ -150,7 +174,6 @@ private struct CreateStudentParams: Encodable {
     let destinationLng: Double
 
     enum CodingKeys: String, CodingKey {
-        case studentNFCUID = "student_nfc_uid"
         case studentFullName = "student_full_name"
         case studentDateOfBirth = "student_date_of_birth"
         case studentPickupAddress = "student_pickup_address"
@@ -165,7 +188,6 @@ private struct CreateStudentParams: Encodable {
 
 private struct UpdateStudentParams: Encodable {
     let targetStudentID: UUID
-    let studentNFCUID: String
     let studentFullName: String
     let studentDateOfBirth: String
     let studentPickupAddress: String
@@ -174,7 +196,6 @@ private struct UpdateStudentParams: Encodable {
 
     enum CodingKeys: String, CodingKey {
         case targetStudentID = "target_student_id"
-        case studentNFCUID = "student_nfc_uid"
         case studentFullName = "student_full_name"
         case studentDateOfBirth = "student_date_of_birth"
         case studentPickupAddress = "student_pickup_address"
@@ -184,10 +205,10 @@ private struct UpdateStudentParams: Encodable {
 }
 
 private struct LinkStudentParams: Encodable {
-    let studentNFCUID: String
+    let studentQRCode: String
 
     enum CodingKeys: String, CodingKey {
-        case studentNFCUID = "student_nfc_uid"
+        case studentQRCode = "student_qr_code"
     }
 }
 
@@ -251,11 +272,21 @@ private struct DestinationIDParams: Encodable {
     }
 }
 
+private struct CreatedStudentRow: Decodable {
+    let id: UUID
+    let qrCode: String
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case qrCode = "qr_code"
+    }
+}
+
 enum SupabaseStudentDirectoryService {
     static func fetchLinkedStudents() async throws -> [StudentDirectoryEntry] {
         let students: [StudentRecord] = try await supabase
             .from("students")
-            .select("id, nfc_uid, full_name, date_of_birth, pickup_address, active")
+            .select("id, qr_code, full_name, date_of_birth, pickup_address, active")
             .execute()
             .value
 
@@ -278,45 +309,57 @@ enum SupabaseStudentDirectoryService {
         }
     }
 
-    static func createStudent(from input: StudentEditorInput) async throws {
+    @discardableResult
+    static func createStudent(from input: StudentEditorInput) async throws -> CreatedStudent {
         let normalized = try normalize(input)
         try await ensureNoDuplicateStudentCandidate(
             fullName: normalized.fullName,
             dateOfBirth: normalized.dateOfBirth,
             excludingStudentID: nil
         )
-        let pickup = try await geocodeAddress(normalized.pickupAddress)
-        let primaryDestination = try await geocodeDestination(normalized.destinations[0])
 
+        guard let pickup = normalized.pickupCoordinate else {
+            throw StudentManagementError.pickupAddressRequired
+        }
+        guard let primary = normalized.destinations.first,
+              let primaryCoord = primary.coordinate else {
+            throw StudentManagementError.destinationIncomplete
+        }
+
+        let createdRows: [CreatedStudentRow]
         do {
-            try await supabase
+            createdRows = try await supabase
                 .rpc(
                     "create_student_with_destination",
                     params: CreateStudentParams(
-                        studentNFCUID: normalized.nfcUID,
                         studentFullName: normalized.fullName,
                         studentDateOfBirth: StudentDateCodec.stringify(normalized.dateOfBirth),
-                        studentPickupAddress: pickup.formatted,
-                        studentPickupLat: pickup.lat,
-                        studentPickupLng: pickup.lng,
-                        destinationLabel: primaryDestination.label,
-                        destinationAddress: primaryDestination.formattedAddress,
-                        destinationLat: primaryDestination.lat,
-                        destinationLng: primaryDestination.lng
+                        studentPickupAddress: normalized.pickupAddress,
+                        studentPickupLat: pickup.latitude,
+                        studentPickupLng: pickup.longitude,
+                        destinationLabel: primary.label,
+                        destinationAddress: primary.address,
+                        destinationLat: primaryCoord.latitude,
+                        destinationLng: primaryCoord.longitude
                     )
                 )
                 .execute()
+                .value
         } catch {
             throw mapBackendStudentManagementError(error)
         }
 
-        guard normalized.destinations.count > 1 else { return }
+        guard let createdRow = createdRows.first else {
+            throw StudentManagementError.createdStudentMissing
+        }
 
-        let createdStudent = try await fetchStudent(matchingNFCUID: normalized.nfcUID)
+        let created = CreatedStudent(id: createdRow.id, qrCode: createdRow.qrCode)
 
         for destination in normalized.destinations.dropFirst() {
-            try await addDestination(to: createdStudent.student.id, destination: destination)
+            try await addDestination(to: created.id, destination: destination)
         }
+
+        return created
     }
 
     static func updateStudent(_ entry: StudentDirectoryEntry, from input: StudentEditorInput) async throws {
@@ -324,13 +367,27 @@ enum SupabaseStudentDirectoryService {
         let existingDestinationIDs = Set(entry.destinations.map(\ .id))
         let keptDestinationIDs = Set(normalized.destinations.compactMap(\ .destinationID))
 
-        if shouldUpdateStudentRecord(entry.student, with: normalized) {
+        let nonPickupChanged = normalized.fullName != entry.student.fullName
+            || StudentDateCodec.stringify(normalized.dateOfBirth) != entry.student.dateOfBirth
+        let pickupChanged = normalized.pickupCoordinate != nil
+
+        if nonPickupChanged || pickupChanged {
             try await ensureNoDuplicateStudentCandidate(
                 fullName: normalized.fullName,
                 dateOfBirth: normalized.dateOfBirth,
                 excludingStudentID: entry.student.id
             )
-            let pickup = try await geocodeAddress(normalized.pickupAddress)
+
+            // If pickup wasn't re-picked, we still need lat/lng to satisfy the RPC contract.
+            // Forward-geocode the saved address as a fallback. Most addresses we previously
+            // saved came from reverse geocoding, so the round-trip almost always succeeds.
+            let pickup: CoordinatePair
+            if let picked = normalized.pickupCoordinate {
+                pickup = picked
+            } else {
+                let geocoded = try await Geocoder.geocode(normalized.pickupAddress)
+                pickup = CoordinatePair(latitude: geocoded.lat, longitude: geocoded.lng)
+            }
 
             do {
                 try await supabase
@@ -338,12 +395,11 @@ enum SupabaseStudentDirectoryService {
                         "update_student",
                         params: UpdateStudentParams(
                             targetStudentID: entry.student.id,
-                            studentNFCUID: normalized.nfcUID,
                             studentFullName: normalized.fullName,
                             studentDateOfBirth: StudentDateCodec.stringify(normalized.dateOfBirth),
-                            studentPickupAddress: pickup.formatted,
-                            studentPickupLat: pickup.lat,
-                            studentPickupLng: pickup.lng
+                            studentPickupAddress: normalized.pickupAddress,
+                            studentPickupLat: pickup.latitude,
+                            studentPickupLng: pickup.longitude
                         )
                     )
                     .execute()
@@ -357,7 +413,9 @@ enum SupabaseStudentDirectoryService {
         for destination in normalized.destinations {
             if let destinationID = destination.destinationID,
                let original = originalDestinationsByID[destinationID] {
-                if destination.label != original.label || destination.address != original.address {
+                let labelChanged = destination.label != original.label
+                let locationChanged = destination.coordinate != nil
+                if labelChanged || locationChanged {
                     try await updateDestination(destinationID, destination: destination)
                 }
             } else {
@@ -377,15 +435,19 @@ enum SupabaseStudentDirectoryService {
             .execute()
     }
 
-    static func linkStudent(byNFCUID nfcUID: String) async throws {
-        let normalizedNFCUID = normalizeNFCUID(nfcUID)
-        guard !normalizedNFCUID.isEmpty else {
-            throw StudentManagementError.nfcUIDRequired
+    static func linkStudent(byQRCode qrCode: String) async throws {
+        let trimmed = qrCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw StudentManagementError.qrCodeRequired
         }
 
-        try await supabase
-            .rpc("link_student_by_nfc", params: LinkStudentParams(studentNFCUID: normalizedNFCUID))
-            .execute()
+        do {
+            try await supabase
+                .rpc("link_student_by_qr", params: LinkStudentParams(studentQRCode: trimmed))
+                .execute()
+        } catch {
+            throw mapBackendStudentManagementError(error)
+        }
     }
 
     private static func fetchDestinations(for studentID: UUID) async throws -> [DestinationRecord] {
@@ -401,16 +463,8 @@ enum SupabaseStudentDirectoryService {
         }
     }
 
-    private static func fetchStudent(matchingNFCUID nfcUID: String) async throws -> StudentDirectoryEntry {
-        let entries = try await fetchLinkedStudents()
-        guard let entry = entries.first(where: { normalizeNFCUID($0.student.nfcUID) == nfcUID }) else {
-            throw StudentManagementError.createdStudentMissing
-        }
-        return entry
-    }
-
     private static func addDestination(to studentID: UUID, destination: EditableDestination) async throws {
-        let geocodedDestination = try await geocodeDestination(destination)
+        let resolved = try await resolveCoordinate(for: destination)
 
         do {
             try await supabase
@@ -418,10 +472,10 @@ enum SupabaseStudentDirectoryService {
                     "add_destination",
                     params: DestinationMutationParams(
                         targetStudentID: studentID,
-                        destinationLabel: geocodedDestination.label,
-                        destinationAddress: geocodedDestination.formattedAddress,
-                        destinationLat: geocodedDestination.lat,
-                        destinationLng: geocodedDestination.lng
+                        destinationLabel: destination.label,
+                        destinationAddress: destination.address,
+                        destinationLat: resolved.latitude,
+                        destinationLng: resolved.longitude
                     )
                 )
                 .execute()
@@ -431,7 +485,7 @@ enum SupabaseStudentDirectoryService {
     }
 
     private static func updateDestination(_ destinationID: UUID, destination: EditableDestination) async throws {
-        let geocodedDestination = try await geocodeDestination(destination)
+        let resolved = try await resolveCoordinate(for: destination)
 
         do {
             try await supabase
@@ -439,16 +493,27 @@ enum SupabaseStudentDirectoryService {
                     "update_destination",
                     params: DestinationUpdateParams(
                         targetDestinationID: destinationID,
-                        destinationLabel: geocodedDestination.label,
-                        destinationAddress: geocodedDestination.formattedAddress,
-                        destinationLat: geocodedDestination.lat,
-                        destinationLng: geocodedDestination.lng
+                        destinationLabel: destination.label,
+                        destinationAddress: destination.address,
+                        destinationLat: resolved.latitude,
+                        destinationLng: resolved.longitude
                     )
                 )
                 .execute()
         } catch {
             throw mapBackendStudentManagementError(error)
         }
+    }
+
+    /// For destinations that already exist in the DB and weren't re-picked in this session,
+    /// we need lat/lng to satisfy the RPC contract. Forward-geocode the saved address as a
+    /// fallback; freshly picked destinations skip this entirely.
+    private static func resolveCoordinate(for destination: EditableDestination) async throws -> CoordinatePair {
+        if let coordinate = destination.coordinate {
+            return coordinate
+        }
+        let geocoded = try await Geocoder.geocode(destination.address)
+        return CoordinatePair(latitude: geocoded.lat, longitude: geocoded.lng)
     }
 
     private static func deleteDestination(_ destinationID: UUID) async throws {
@@ -458,19 +523,15 @@ enum SupabaseStudentDirectoryService {
     }
 
     private static func normalize(_ input: StudentEditorInput) throws -> StudentEditorInput {
-        let normalizedNFCUID = normalizeNFCUID(input.nfcUID)
         let normalizedFullName = input.fullName.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedPickupAddress = input.pickupAddress.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedDestinations = input.destinations.map {
             EditableDestination(
                 destinationID: $0.destinationID,
                 label: $0.label.trimmingCharacters(in: .whitespacesAndNewlines),
-                address: $0.address.trimmingCharacters(in: .whitespacesAndNewlines)
+                address: $0.address.trimmingCharacters(in: .whitespacesAndNewlines),
+                coordinate: $0.coordinate
             )
-        }
-
-        guard !normalizedNFCUID.isEmpty else {
-            throw StudentManagementError.nfcUIDRequired
         }
 
         guard !normalizedFullName.isEmpty else {
@@ -498,18 +559,12 @@ enum SupabaseStudentDirectoryService {
         }
 
         return StudentEditorInput(
-            nfcUID: normalizedNFCUID,
             fullName: normalizedFullName,
             dateOfBirth: input.dateOfBirth,
             pickupAddress: normalizedPickupAddress,
+            pickupCoordinate: input.pickupCoordinate,
             destinations: normalizedDestinations
         )
-    }
-
-    private static func normalizeNFCUID(_ rawValue: String) -> String {
-        rawValue
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .uppercased()
     }
 
     private static func normalizeText(_ rawValue: String) -> String {
@@ -520,13 +575,6 @@ enum SupabaseStudentDirectoryService {
 
     private static func makeDestinationKey(label: String, address: String) -> String {
         "\(normalizeText(label))|\(normalizeText(address))"
-    }
-
-    private static func shouldUpdateStudentRecord(_ student: StudentRecord, with input: StudentEditorInput) -> Bool {
-        normalizeNFCUID(student.nfcUID) != input.nfcUID
-            || student.fullName != input.fullName
-            || student.dateOfBirth != StudentDateCodec.stringify(input.dateOfBirth)
-            || student.pickupAddress != input.pickupAddress
     }
 
     private static func ensureNoDuplicateStudentCandidate(
@@ -560,13 +608,12 @@ enum SupabaseStudentDirectoryService {
     private static func mapBackendStudentManagementError(_ error: Error) -> Error {
         let message = error.localizedDescription.lowercased()
 
-        if message.contains("student_duplicate_exists")
-            && (message.contains("function") || message.contains("schema cache") || message.contains("pgrst")) {
+        if message.contains("function") && message.contains("schema cache") {
             return StudentManagementError.databaseUpdateRequired
         }
 
-        if message.contains("already linked to another active student") {
-            return StudentManagementError.duplicateNFCUID
+        if message.contains("no active student matches") {
+            return StudentManagementError.qrCodeNotFound
         }
 
         if message.contains("same name and date of birth already exists") {
@@ -580,22 +627,4 @@ enum SupabaseStudentDirectoryService {
         return error
     }
 
-    private static func geocodeAddress(_ address: String) async throws -> (lat: Double, lng: Double, formatted: String) {
-        try await Geocoder.geocode(address)
-    }
-
-    private static func geocodeDestination(_ destination: EditableDestination) async throws -> (
-        label: String,
-        lat: Double,
-        lng: Double,
-        formattedAddress: String
-    ) {
-        let geocoded = try await Geocoder.geocode(destination.address)
-        return (
-            label: destination.label,
-            lat: geocoded.lat,
-            lng: geocoded.lng,
-            formattedAddress: geocoded.formatted
-        )
-    }
 }

@@ -101,7 +101,7 @@ struct ParentHomeView: View {
                         Button {
                             showLinkStudent = true
                         } label: {
-                            Label("Link by NFC", systemImage: "wave.3.right.circle")
+                            Label("Link by QR", systemImage: "qrcode.viewfinder")
                         }
 
                         Divider()
@@ -215,7 +215,7 @@ struct ParentHomeView: View {
                 .font(.headline)
                 .foregroundStyle(.white)
 
-            Text("Register a student from this account or link an existing student by scanning their NFC tag.")
+            Text("Register a student from this account or link an existing student by scanning their QR code.")
                 .font(.subheadline)
                 .foregroundStyle(Color.appSecondary)
 
@@ -230,7 +230,7 @@ struct ParentHomeView: View {
                 Button {
                     showLinkStudent = true
                 } label: {
-                    Text("Link by NFC")
+                    Text("Link by QR")
                 }
                 .buttonStyle(NeonOutlineButtonStyle())
             }
@@ -252,7 +252,7 @@ struct ParentHomeView: View {
         if students.isEmpty {
             return "This is now the operational parent workspace for creating, linking, and managing students."
         }
-        return "Manage student profiles, confirm NFC links, and keep destination data current from here."
+        return "Manage student profiles, share QR codes with co-parents, and keep destination data current from here."
     }
 
     private func statPill(title: String, value: String) -> some View {
@@ -300,9 +300,13 @@ private struct StudentCard: View {
                         .font(.subheadline)
                         .foregroundStyle(Color.appSecondary)
 
-                    Text("Tag \(entry.student.nfcUID)")
-                        .font(.caption)
-                        .foregroundStyle(Color.appSecondary)
+                    HStack(spacing: 6) {
+                        Image(systemName: "qrcode")
+                            .font(.caption2)
+                        Text("QR ready · tap Manage to view")
+                    }
+                    .font(.caption)
+                    .foregroundStyle(Color.appSecondary)
                 }
 
                 Spacer()

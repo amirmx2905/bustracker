@@ -94,39 +94,16 @@ final class AuthViewModel {
         try await ensureProfileLoaded()
     }
 
-    func signUpParent(
-        email: String,
-        password: String,
-        fullName: String,
-        pickupAddress: String,
-        pickupLabel: String
-    ) async throws {
-        let draft = try await makeProfileDraft(
-            role: .parent,
-            fullName: fullName,
-            pickupAddress: pickupAddress,
-            pickupLabel: pickupLabel
-        )
-        let response = try await supabase.auth.signUp(
-            email: email,
-            password: password,
-            data: draft.signupMetadata
-        )
-
-        guard response.session != nil else {
-            throw AuthError.emailConfirmationRequired
-        }
-
-        try await ensureProfileLoaded(repairingMissingProfileWith: draft)
+    func signUpParent(email: String, password: String, fullName: String) async throws {
+        try await signUp(role: .parent, email: email, password: password, fullName: fullName)
     }
 
     func signUpDriver(email: String, password: String, fullName: String) async throws {
-        let draft = try await makeProfileDraft(
-            role: .driver,
-            fullName: fullName,
-            pickupAddress: nil,
-            pickupLabel: nil
-        )
+        try await signUp(role: .driver, email: email, password: password, fullName: fullName)
+    }
+
+    private func signUp(role: ProfileRole, email: String, password: String, fullName: String) async throws {
+        let draft = makeProfileDraft(role: role, fullName: fullName)
         let response = try await supabase.auth.signUp(
             email: email,
             password: password,
@@ -140,36 +117,17 @@ final class AuthViewModel {
         try await ensureProfileLoaded(repairingMissingProfileWith: draft)
     }
 
-    func completeMissingProfile(
-        role: ProfileRole,
-        fullName: String,
-        pickupAddress: String?,
-        pickupLabel: String?
-    ) async throws {
-        let draft = try await makeProfileDraft(
-            role: role,
-            fullName: fullName,
-            pickupAddress: pickupAddress,
-            pickupLabel: pickupLabel
-        )
+    func completeMissingProfile(role: ProfileRole, fullName: String) async throws {
+        let draft = makeProfileDraft(role: role, fullName: fullName)
         try await ensureProfileLoaded(repairingMissingProfileWith: draft)
     }
 
-    func updateProfile(
-        fullName: String,
-        pickupAddress: String?,
-        pickupLabel: String?
-    ) async throws {
+    func updateProfile(fullName: String) async throws {
         guard case .authenticated(let profile) = appState else {
             throw AuthError.profileMissing
         }
 
-        let draft = try await makeProfileDraft(
-            role: profile.role,
-            fullName: fullName,
-            pickupAddress: pickupAddress,
-            pickupLabel: pickupLabel
-        )
+        let draft = makeProfileDraft(role: profile.role, fullName: fullName)
         try await SupabaseProfileService.updateProfile(from: draft)
         try await ensureProfileLoaded()
     }
@@ -189,40 +147,11 @@ final class AuthViewModel {
 
     // MARK: - Helpers
 
-    private func makeProfileDraft(
-        role: ProfileRole,
-        fullName: String,
-        pickupAddress: String?,
-        pickupLabel: String?
-    ) async throws -> ProfileDraft {
-        let normalizedFullName = fullName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalizedPickupAddress = pickupAddress?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalizedPickupLabel = pickupLabel?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        switch role {
-        case .parent:
-            let (lat, lng, formatted) = try await Geocoder.geocode(normalizedPickupAddress ?? "")
-            return ProfileDraft(
-                role: .parent,
-                fullName: normalizedFullName,
-                pickupLabel: normalizedPickupLabel,
-                pickupAddress: formatted,
-                lat: lat,
-                lng: lng
-            )
-
-        case .driver:
-            return ProfileDraft(
-                role: .driver,
-                fullName: normalizedFullName,
-                pickupLabel: nil,
-                pickupAddress: nil,
-                lat: nil,
-                lng: nil
-            )
-        }
+    private func makeProfileDraft(role: ProfileRole, fullName: String) -> ProfileDraft {
+        ProfileDraft(
+            role: role,
+            fullName: fullName.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
     }
 
     private func ensureProfileLoaded(

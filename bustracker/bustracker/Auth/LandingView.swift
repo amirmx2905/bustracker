@@ -88,7 +88,7 @@ struct LandingView: View {
 
             roleCard(
                 title: "I'm a driver",
-                subtitle: "Run trips and scan NFC",
+                subtitle: "Run trips and scan QR codes",
                 icon: "car.fill",
                 isPrimary: false
             ) {

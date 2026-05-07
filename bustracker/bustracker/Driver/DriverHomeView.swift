@@ -44,7 +44,7 @@ struct DriverHomeView: View {
                             .font(.title2.bold())
                             .foregroundStyle(.white)
 
-                        Text("Here you'll start trips\nand scan student NFCs.")
+                        Text("Here you'll start trips\nand scan student QR codes.")
                             .font(.subheadline)
                             .foregroundStyle(Color.appSecondary)
                             .multilineTextAlignment(.center)

@@ -14,75 +14,36 @@ struct Profile: Decodable {
     let id: UUID
     let role: ProfileRole
     let fullName: String
-    let pickupLabel: String?
-    let pickupAddress: String?
 
     enum CodingKeys: String, CodingKey {
         case id, role
         case fullName = "full_name"
-        case pickupLabel = "pickup_label"
-        case pickupAddress = "pickup_address"
     }
 }
 
 struct ProfileDraft {
     let role: ProfileRole
     let fullName: String
-    let pickupLabel: String?
-    let pickupAddress: String?
-    let lat: Double?
-    let lng: Double?
-
-    private var normalizedPickupLabel: String? {
-        guard role == .parent else { return nil }
-        if let pickupLabel, !pickupLabel.isEmpty {
-            return pickupLabel
-        }
-        return "Home"
-    }
-
-    private var pickupPointWKT: String? {
-        guard let lat, let lng else { return nil }
-        return "SRID=4326;POINT(\(lng) \(lat))"
-    }
 
     var signupMetadata: [String: AnyJSON] {
-        var metadata: [String: AnyJSON] = [
+        [
             "role": .string(role.rawValue),
             "full_name": .string(fullName)
         ]
-
-        if let pickupLabel = normalizedPickupLabel {
-            metadata["pickup_label"] = .string(pickupLabel)
-        }
-        if let pickupAddress {
-            metadata["pickup_address"] = .string(pickupAddress)
-        }
-        if let pickupPointWKT {
-            metadata["pickup_point"] = .string(pickupPointWKT)
-        }
-
-        return metadata
     }
 
     fileprivate var createPayload: ProfileInsertPayload {
         ProfileInsertPayload(
             id: UUID(),
             role: role.rawValue,
-            full_name: fullName,
-            pickup_label: normalizedPickupLabel,
-            pickup_address: pickupAddress,
-            pickup_point: pickupPointWKT
+            full_name: fullName
         )
     }
 
     fileprivate var updatePayload: ProfileUpdatePayload {
         ProfileUpdatePayload(
             role: role.rawValue,
-            full_name: fullName,
-            pickup_label: normalizedPickupLabel,
-            pickup_address: pickupAddress,
-            pickup_point: pickupPointWKT
+            full_name: fullName
         )
     }
 }
@@ -115,17 +76,11 @@ private struct ProfileInsertPayload: Encodable {
     let id: UUID
     let role: String
     let full_name: String
-    let pickup_label: String?
-    let pickup_address: String?
-    let pickup_point: String? // WKT "SRID=4326;POINT(lng lat)"
 }
 
 private struct ProfileUpdatePayload: Encodable {
     let role: String
     let full_name: String
-    let pickup_label: String?
-    let pickup_address: String?
-    let pickup_point: String?
 }
 
 enum SupabaseProfileService {
@@ -133,7 +88,7 @@ enum SupabaseProfileService {
         let session = try await supabase.auth.session
         let profiles: [Profile] = try await supabase
             .from("profiles")
-            .select("id, role, full_name, pickup_label, pickup_address")
+            .select("id, role, full_name")
             .eq("id", value: session.user.id)
             .limit(1)
             .execute()
@@ -148,14 +103,10 @@ enum SupabaseProfileService {
 
     static func createProfile(from draft: ProfileDraft) async throws {
         let session = try await supabase.auth.session
-        var payload = draft.createPayload
-        payload = ProfileInsertPayload(
+        let payload = ProfileInsertPayload(
             id: session.user.id,
-            role: payload.role,
-            full_name: payload.full_name,
-            pickup_label: payload.pickup_label,
-            pickup_address: payload.pickup_address,
-            pickup_point: payload.pickup_point
+            role: draft.role.rawValue,
+            full_name: draft.fullName
         )
 
         _ = try await supabase

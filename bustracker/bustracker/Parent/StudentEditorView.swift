@@ -1,3 +1,4 @@
+import CoreLocation
 import SwiftUI
 
 struct StudentEditorView: View {
@@ -6,31 +7,19 @@ struct StudentEditorView: View {
         case edit(StudentDirectoryEntry)
     }
 
-    private enum CreateStep: Int, CaseIterable, Identifiable {
-        case tag
-        case details
+    private enum CreateStage {
+        case form
+        case qrReady(CreatedStudent)
+    }
 
-        var id: Int { rawValue }
+    private enum ActivePicker: Identifiable {
+        case pickup
+        case destination(UUID)
 
-        var title: String {
+        var id: String {
             switch self {
-            case .tag:
-                return "Tag"
-            case .details:
-                return "Details"
-            }
-        }
-
-        var eyebrow: String {
-            "Step \(rawValue + 1)"
-        }
-
-        var description: String {
-            switch self {
-            case .tag:
-                return "Capture the student tag first."
-            case .details:
-                return "Add student info and stops."
+            case .pickup: return "pickup"
+            case .destination(let id): return "destination-\(id.uuidString)"
             }
         }
     }
@@ -40,53 +29,52 @@ struct StudentEditorView: View {
     let mode: Mode
     let onSaved: @MainActor () async -> Void
 
-    @State private var nfcUID: String
     @State private var fullName: String
     @State private var dateOfBirth: Date
     @State private var pickupAddress: String
+    @State private var pickupCoordinate: CoordinatePair?
     @State private var destinations: [EditableDestination]
-    @State private var createStep: CreateStep
+    @State private var createStage: CreateStage
     @State private var isBusy = false
-    @State private var isScanning = false
     @State private var errorMessage: String?
     @State private var showArchiveConfirmation = false
+    @State private var activePicker: ActivePicker?
 
-    init(mode: Mode, onSaved: @escaping @MainActor () async -> Void) {
+    @MainActor init(mode: Mode, onSaved: @escaping @MainActor () async -> Void) {
         self.mode = mode
         self.onSaved = onSaved
 
         switch mode {
         case .create:
             let suggestedBirthDate = Calendar.current.date(byAdding: .year, value: -8, to: Date()) ?? Date()
-            _nfcUID = State(initialValue: "")
             _fullName = State(initialValue: "")
             _dateOfBirth = State(initialValue: suggestedBirthDate)
             _pickupAddress = State(initialValue: "")
+            _pickupCoordinate = State(initialValue: nil)
             _destinations = State(initialValue: [EditableDestination()])
-            _createStep = State(initialValue: .tag)
+            _createStage = State(initialValue: .form)
 
         case .edit(let entry):
-            _nfcUID = State(initialValue: entry.student.nfcUID)
             _fullName = State(initialValue: entry.student.fullName)
             _dateOfBirth = State(initialValue: entry.student.birthDate ?? Date())
             _pickupAddress = State(initialValue: entry.student.pickupAddress)
+            _pickupCoordinate = State(initialValue: nil)
             _destinations = State(initialValue: entry.destinations.map(EditableDestination.init(record:)))
-            _createStep = State(initialValue: .details)
+            _createStage = State(initialValue: .form)
         }
     }
 
     private var isCreateMode: Bool {
-        switch mode {
-        case .create:
-            return true
-        case .edit:
-            return false
-        }
+        if case .create = mode { return true }
+        return false
     }
 
     private var title: String {
         switch mode {
         case .create:
+            if case .qrReady = createStage {
+                return "Student QR ready"
+            }
             return "Register student"
         case .edit:
             return "Manage student"
@@ -96,73 +84,39 @@ struct StudentEditorView: View {
     private var subtitle: String {
         switch mode {
         case .create:
-            switch createStep {
-            case .tag:
-                return "Step 1 of 2. Scan the student's NTAG before entering any profile details."
-            case .details:
-                return "Step 2 of 2. Enter the student's profile, pickup, and destinations before saving."
+            switch createStage {
+            case .form:
+                return "Pick the student's pickup and destination on the map. A unique QR code is generated automatically when you save."
+            case .qrReady:
+                return "Save or print this QR. The driver scans it to check the student in and out, and a co-parent can scan it to link their account."
             }
         case .edit:
             return "Update student details, manage destinations, or archive the student when they no longer ride."
         }
     }
 
-    private var submitTitle: String {
-        switch mode {
-        case .create:
-            return "Create student"
-        case .edit:
-            return "Save changes"
-        }
-    }
-
-    private var trimmedNFCUID: String {
-        nfcUID.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private var isTagStepValid: Bool {
-        !trimmedNFCUID.isEmpty
+    private var pickupReady: Bool {
+        !pickupAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var isFormValid: Bool {
-        isTagStepValid
-            && !fullName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !pickupAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !destinations.isEmpty
-            && destinations.allSatisfy {
-                !$0.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    && !$0.address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            }
-    }
-
-    private var isPrimaryActionEnabled: Bool {
-        guard !isBusy, !isScanning else { return false }
-
+        let nameOK = !fullName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let pickupOK: Bool
         switch mode {
         case .create:
-            switch createStep {
-            case .tag:
-                return isTagStepValid
-            case .details:
-                return isFormValid
-            }
+            pickupOK = pickupCoordinate != nil
         case .edit:
-            return isFormValid
+            pickupOK = pickupReady
         }
-    }
-
-    private var primaryActionTitle: String {
-        switch mode {
-        case .create:
-            switch createStep {
-            case .tag:
-                return "Continue"
-            case .details:
-                return submitTitle
+        let destinationsOK = !destinations.isEmpty
+            && destinations.allSatisfy { destination in
+                guard !destination.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+                if destination.destinationID == nil {
+                    return destination.coordinate != nil
+                }
+                return !destination.address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             }
-        case .edit:
-            return submitTitle
-        }
+        return nameOK && pickupOK && destinationsOK
     }
 
     private var canArchive: Bool {
@@ -174,11 +128,6 @@ struct StudentEditorView: View {
         ScrollView {
             VStack(spacing: 24) {
                 headerCard
-
-                if isCreateMode {
-                    wizardProgress
-                }
-
                 contentSections
 
                 if let errorMessage {
@@ -202,21 +151,16 @@ struct StudentEditorView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(Color.appBg, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                if isScanning {
-                    ProgressView()
-                        .tint(.neonBlue)
-                }
-            }
-        }
         .alert("Archive student?", isPresented: $showArchiveConfirmation) {
             Button("Cancel", role: .cancel) { }
             Button("Archive", role: .destructive) {
                 Task { await archiveStudent() }
             }
         } message: {
-            Text("This keeps the student record but marks it inactive so the NFC tag can be reused later.")
+            Text("This keeps the student record but marks it inactive. The QR code will stop working until they ride again.")
+        }
+        .sheet(item: $activePicker) { picker in
+            pickerSheet(for: picker)
         }
         .disabled(isBusy)
     }
@@ -241,154 +185,23 @@ struct StudentEditorView: View {
         }
     }
 
-    private var wizardProgress: some View {
-        HStack(spacing: 12) {
-            ForEach(CreateStep.allCases) { step in
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(step.eyebrow.uppercased())
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(step == createStep ? Color.neonBlue : Color.appSecondary)
-
-                    Text(step.title)
-                        .font(.headline)
-                        .foregroundStyle(.white)
-
-                    Text(step.description)
-                        .font(.caption)
-                        .foregroundStyle(Color.appSecondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(16)
-                .background(step == createStep ? Color.neonBlue.opacity(0.14) : Color.appCard)
-                .clipShape(RoundedRectangle(cornerRadius: 18))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 18)
-                        .strokeBorder(step == createStep ? Color.neonBlue : Color.appBorder, lineWidth: 1)
-                }
-            }
-        }
-    }
-
     @ViewBuilder
     private var contentSections: some View {
         switch mode {
         case .create:
-            switch createStep {
-            case .tag:
-                createTagStepSection
-            case .details:
+            switch createStage {
+            case .form:
                 studentDetailsSection
+                pickupSection
                 destinationsSection
+            case .qrReady(let created):
+                qrReadyCard(created: created)
             }
-        case .edit:
-            editTagSection
+        case .edit(let entry):
             studentDetailsSection
+            pickupSection
             destinationsSection
-        }
-    }
-
-    private var createTagStepSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            FormSectionLabel(text: "Scan student tag")
-
-            VStack(spacing: 18) {
-                Image(systemName: "wave.3.right.circle.fill")
-                    .font(.system(size: 42, weight: .semibold))
-                    .foregroundStyle(Color.neonBlue)
-
-                VStack(spacing: 8) {
-                    Text("Tap the NTAG to this iPhone")
-                        .font(.headline)
-                        .foregroundStyle(.white)
-
-                    Text("Hold the tag near the top of the phone. Once the UID is captured, continue to the student details step.")
-                        .font(.subheadline)
-                        .foregroundStyle(Color.appSecondary)
-                        .multilineTextAlignment(.center)
-                }
-
-                Button {
-                    Task { await scanNFC() }
-                } label: {
-                    HStack(spacing: 10) {
-                        if isScanning {
-                            ProgressView()
-                                .tint(.white)
-                        }
-
-                        Text(isScanning ? "Scanning..." : "Scan student tag")
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(NeonPrimaryButtonStyle())
-                .disabled(isScanning || !NFCScanner.isAvailable)
-
-                if !NFCScanner.isAvailable {
-                    Text("NFC scanning is unavailable here, so enter the tag UID manually to keep moving.")
-                        .font(.caption)
-                        .foregroundStyle(Color.appSecondary)
-                        .multilineTextAlignment(.center)
-                }
-
-                labeledField("Tag UID") {
-                    TextField("Student tag UID", text: $nfcUID)
-                        .textInputAutocapitalization(.characters)
-                        .autocorrectionDisabled()
-                        .neonInput()
-                }
-
-                Text("You do not need to write student data onto the tag. The app only reads and stores the tag UID.")
-                    .font(.caption)
-                    .foregroundStyle(Color.appSecondary)
-                    .multilineTextAlignment(.center)
-
-                if isTagStepValid {
-                    InlineMessage(
-                        message: "Tag captured. Continue to fill in the student profile.",
-                        color: .green,
-                        icon: "checkmark.circle.fill"
-                    )
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .padding(22)
-            .background(Color.appCard)
-            .clipShape(RoundedRectangle(cornerRadius: 20))
-            .overlay {
-                RoundedRectangle(cornerRadius: 20)
-                    .strokeBorder(Color.appBorder, lineWidth: 1)
-            }
-        }
-    }
-
-    private var editTagSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            FormSectionLabel(text: "NFC tag")
-
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 10) {
-                    TextField("Student tag UID", text: $nfcUID)
-                        .textInputAutocapitalization(.characters)
-                        .autocorrectionDisabled()
-                        .neonInput()
-
-                    Button {
-                        Task { await scanNFC() }
-                    } label: {
-                        Image(systemName: "wave.3.right.circle.fill")
-                            .font(.system(size: 22, weight: .semibold))
-                            .foregroundStyle(Color.neonBlue)
-                            .frame(width: 44, height: 44)
-                            .background(Color.appInput)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                    }
-                    .disabled(isScanning || !NFCScanner.isAvailable)
-                }
-
-                Text(NFCScanner.isAvailable ? "Rescan the student's physical NFC tag or paste the UID manually if you already have it." : "NFC scanning is unavailable here, so enter the tag UID manually.")
-                    .font(.caption)
-                    .foregroundStyle(Color.appSecondary)
-            }
+            qrDisplayCard(qrCode: entry.student.qrCode, isActive: entry.student.active)
         }
     }
 
@@ -425,15 +238,21 @@ struct StudentEditorView: View {
                             .strokeBorder(Color.appBorder, lineWidth: 1)
                     }
                 }
+            }
+        }
+    }
 
-                labeledField("Pickup address") {
-                    TextField("Street, city, state", text: $pickupAddress)
-                        .neonInput()
-                }
+    private var pickupSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            FormSectionLabel(text: "Pickup location")
 
-                Text("Pickup and destination addresses are geocoded before saving, so use complete real-world addresses.")
-                    .font(.caption)
-                    .foregroundStyle(Color.appSecondary)
+            locationCard(
+                address: pickupAddress,
+                isPicked: pickupCoordinate != nil,
+                emptyTitle: "Set pickup location",
+                changeTitle: "Change pickup location"
+            ) {
+                activePicker = .pickup
             }
         }
     }
@@ -458,61 +277,9 @@ struct StudentEditorView: View {
         }
     }
 
-    @ViewBuilder
-    private var actionSection: some View {
-        switch mode {
-        case .create:
-            if createStep == .tag {
-                primaryActionButton
-            } else {
-                HStack(spacing: 12) {
-                    Button {
-                        errorMessage = nil
-                        createStep = .tag
-                    } label: {
-                        Text("Back")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(NeonOutlineButtonStyle())
-                    .disabled(isBusy || isScanning)
-
-                    primaryActionButton
-                }
-            }
-        case .edit:
-            primaryActionButton
-
-            if canArchive {
-                Button(role: .destructive) {
-                    showArchiveConfirmation = true
-                } label: {
-                    Text("Archive student")
-                }
-                .buttonStyle(NeonOutlineButtonStyle())
-            }
-        }
-    }
-
-    private var primaryActionButton: some View {
-        Button {
-            handlePrimaryAction()
-        } label: {
-            HStack(spacing: 10) {
-                if isBusy {
-                    ProgressView()
-                        .tint(.white)
-                }
-
-                Text(isBusy ? "Saving..." : primaryActionTitle)
-            }
-            .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(NeonPrimaryButtonStyle())
-        .disabled(!isPrimaryActionEnabled)
-    }
-
     private func destinationCard(index: Int) -> some View {
         let destination = $destinations[index]
+        let current = destinations[index]
 
         return VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -537,9 +304,13 @@ struct StudentEditorView: View {
                     .neonInput()
             }
 
-            labeledField("Address") {
-                TextField("Destination address", text: destination.address)
-                    .neonInput()
+            locationCard(
+                address: current.address,
+                isPicked: current.coordinate != nil,
+                emptyTitle: "Set destination location",
+                changeTitle: "Change destination location"
+            ) {
+                activePicker = .destination(current.id)
             }
         }
         .padding(18)
@@ -549,6 +320,244 @@ struct StudentEditorView: View {
             RoundedRectangle(cornerRadius: 18)
                 .strokeBorder(Color.appBorder, lineWidth: 1)
         }
+    }
+
+    private func locationCard(
+        address: String,
+        isPicked: Bool,
+        emptyTitle: String,
+        changeTitle: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        return Button(action: action) {
+            VStack(alignment: .leading, spacing: 8) {
+                if trimmed.isEmpty {
+                    HStack(spacing: 12) {
+                        Image(systemName: "mappin.and.ellipse")
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(Color.neonBlue)
+                        Text(emptyTitle)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .foregroundStyle(Color.appSecondary)
+                    }
+                } else {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: isPicked ? "mappin.circle.fill" : "mappin.circle")
+                            .font(.title3)
+                            .foregroundStyle(Color.neonBlue)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(trimmed)
+                                .font(.subheadline)
+                                .foregroundStyle(.white)
+                                .multilineTextAlignment(.leading)
+                            Text(changeTitle)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(Color.neonBlue)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .foregroundStyle(Color.appSecondary)
+                    }
+                }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.appInput)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color.appBorder, lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private func pickerSheet(for picker: ActivePicker) -> some View {
+        switch picker {
+        case .pickup:
+            LocationPickerSheet(
+                title: "Pickup location",
+                initialCenter: defaultPickerCenter()
+            ) { picked in
+                pickupAddress = picked.address
+                pickupCoordinate = CoordinatePair(latitude: picked.latitude, longitude: picked.longitude)
+            }
+        case .destination(let id):
+            LocationPickerSheet(
+                title: "Destination location",
+                initialCenter: defaultPickerCenter()
+            ) { picked in
+                guard let index = destinations.firstIndex(where: { $0.id == id }) else { return }
+                destinations[index].address = picked.address
+                destinations[index].coordinate = CoordinatePair(latitude: picked.latitude, longitude: picked.longitude)
+            }
+        }
+    }
+
+    private func defaultPickerCenter() -> CLLocationCoordinate2D {
+        if let pickupCoordinate {
+            return CLLocationCoordinate2D(latitude: pickupCoordinate.latitude, longitude: pickupCoordinate.longitude)
+        }
+        if let firstPicked = destinations.compactMap(\.coordinate).first {
+            return CLLocationCoordinate2D(latitude: firstPicked.latitude, longitude: firstPicked.longitude)
+        }
+        return CLLocationCoordinate2D(latitude: 20.6597, longitude: -103.3496)
+    }
+
+    private func qrReadyCard(created: CreatedStudent) -> some View {
+        VStack(spacing: 18) {
+            Image(systemName: "checkmark.seal.fill")
+                .font(.system(size: 36, weight: .semibold))
+                .foregroundStyle(Color.neonBlue)
+
+            Text("Student created")
+                .font(.headline)
+                .foregroundStyle(.white)
+
+            QRCodeImage(payload: created.qrCode)
+                .frame(width: 220, height: 220)
+                .padding(16)
+                .background(Color.white)
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+
+            VStack(spacing: 6) {
+                Text("Code")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(Color.appSecondary)
+                Text(created.qrCode)
+                    .font(.footnote.monospaced())
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                    .textSelection(.enabled)
+            }
+
+            ShareLink(
+                item: created.qrCode,
+                subject: Text("BusTracker student QR"),
+                message: Text("Scan this QR in BusTracker to link this student to your account.")
+            ) {
+                Label("Share code", systemImage: "square.and.arrow.up")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(NeonOutlineButtonStyle())
+
+            Text("Save a screenshot for the driver, and share the code with any co-parent who needs to link this student.")
+                .font(.caption)
+                .foregroundStyle(Color.appSecondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(22)
+        .background(Color.appCard)
+        .clipShape(RoundedRectangle(cornerRadius: 20))
+        .overlay {
+            RoundedRectangle(cornerRadius: 20)
+                .strokeBorder(Color.appBorder, lineWidth: 1)
+        }
+    }
+
+    private func qrDisplayCard(qrCode: String, isActive: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 16) {
+            FormSectionLabel(text: "Student QR")
+
+            VStack(spacing: 16) {
+                QRCodeImage(payload: qrCode)
+                    .frame(width: 200, height: 200)
+                    .padding(14)
+                    .background(Color.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 16))
+                    .opacity(isActive ? 1 : 0.4)
+
+                VStack(spacing: 4) {
+                    Text("Code")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(Color.appSecondary)
+                    Text(qrCode)
+                        .font(.footnote.monospaced())
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
+                        .textSelection(.enabled)
+                }
+
+                ShareLink(
+                    item: qrCode,
+                    subject: Text("BusTracker student QR"),
+                    message: Text("Scan this QR in BusTracker to link this student to your account.")
+                ) {
+                    Label("Share code", systemImage: "square.and.arrow.up")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(NeonOutlineButtonStyle())
+
+                if !isActive {
+                    Text("This student is archived. The QR will not match any scan until they are re-activated.")
+                        .font(.caption)
+                        .foregroundStyle(Color.appSecondary)
+                        .multilineTextAlignment(.center)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(20)
+            .background(Color.appCard)
+            .clipShape(RoundedRectangle(cornerRadius: 20))
+            .overlay {
+                RoundedRectangle(cornerRadius: 20)
+                    .strokeBorder(Color.appBorder, lineWidth: 1)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var actionSection: some View {
+        switch mode {
+        case .create:
+            switch createStage {
+            case .form:
+                primaryButton(title: isBusy ? "Saving..." : "Create student", enabled: isFormValid && !isBusy) {
+                    Task { await submitCreate() }
+                }
+            case .qrReady:
+                primaryButton(title: "Done", enabled: true) {
+                    dismiss()
+                }
+            }
+        case .edit:
+            primaryButton(title: isBusy ? "Saving..." : "Save changes", enabled: isFormValid && !isBusy) {
+                Task { await submitUpdate() }
+            }
+
+            if canArchive {
+                Button(role: .destructive) {
+                    showArchiveConfirmation = true
+                } label: {
+                    Text("Archive student")
+                }
+                .buttonStyle(NeonOutlineButtonStyle())
+            }
+        }
+    }
+
+    private func primaryButton(title: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button {
+            action()
+        } label: {
+            HStack(spacing: 10) {
+                if isBusy {
+                    ProgressView()
+                        .tint(.white)
+                }
+                Text(title)
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(NeonPrimaryButtonStyle())
+        .disabled(!enabled)
     }
 
     @ViewBuilder
@@ -561,58 +570,38 @@ struct StudentEditorView: View {
         }
     }
 
-    private func handlePrimaryAction() {
-        errorMessage = nil
-
-        switch mode {
-        case .create:
-            switch createStep {
-            case .tag:
-                guard isTagStepValid else { return }
-                createStep = .details
-            case .details:
-                Task { await submit() }
-            }
-        case .edit:
-            Task { await submit() }
-        }
+    private func makeInput() -> StudentEditorInput {
+        StudentEditorInput(
+            fullName: fullName,
+            dateOfBirth: dateOfBirth,
+            pickupAddress: pickupAddress,
+            pickupCoordinate: pickupCoordinate,
+            destinations: destinations
+        )
     }
 
-    private func scanNFC() async {
-        errorMessage = nil
-        isScanning = true
-        defer { isScanning = false }
-
-        do {
-            nfcUID = try await NFCScanner.scanUID()
-        } catch NFCScannerError.userCancelled {
-            return
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    private func submit() async {
+    private func submitCreate() async {
         errorMessage = nil
         isBusy = true
         defer { isBusy = false }
 
         do {
-            let input = StudentEditorInput(
-                nfcUID: nfcUID,
-                fullName: fullName,
-                dateOfBirth: dateOfBirth,
-                pickupAddress: pickupAddress,
-                destinations: destinations
-            )
+            let created = try await SupabaseStudentDirectoryService.createStudent(from: makeInput())
+            await onSaved()
+            createStage = .qrReady(created)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
 
-            switch mode {
-            case .create:
-                try await SupabaseStudentDirectoryService.createStudent(from: input)
-            case .edit(let entry):
-                try await SupabaseStudentDirectoryService.updateStudent(entry, from: input)
-            }
+    private func submitUpdate() async {
+        guard case .edit(let entry) = mode else { return }
+        errorMessage = nil
+        isBusy = true
+        defer { isBusy = false }
 
+        do {
+            try await SupabaseStudentDirectoryService.updateStudent(entry, from: makeInput())
             await onSaved()
             dismiss()
         } catch {

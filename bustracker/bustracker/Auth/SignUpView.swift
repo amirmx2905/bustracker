@@ -9,15 +9,13 @@ struct SignUpView: View {
     @State private var email = ""
     @State private var password = ""
     @State private var confirmPassword = ""
-    @State private var pickupAddress = ""
-    @State private var pickupLabel = ""
     @State private var isBusy = false
     @State private var errorMessage: String?
     @State private var showEmailConfirmationAlert = false
     @FocusState private var focus: Field?
 
     private enum Field: Hashable {
-        case fullName, email, password, confirmPassword, pickupAddress, pickupLabel
+        case fullName, email, password, confirmPassword
     }
 
     private var isParent: Bool { role == .parent }
@@ -27,7 +25,6 @@ struct SignUpView: View {
             && !email.isEmpty
             && password.count >= 6
             && password == confirmPassword
-            && (!isParent || !pickupAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
     }
 
     private var passwordMismatch: Bool {
@@ -38,7 +35,6 @@ struct SignUpView: View {
         ScrollView {
             VStack(spacing: 28) {
                 accountSection
-                if isParent { pickupSection }
                 if passwordMismatch {
                     InlineMessage(
                         message: "Passwords don't match.",
@@ -109,38 +105,10 @@ struct SignUpView: View {
                     SecureField("", text: $confirmPassword)
                         .textContentType(.newPassword)
                         .focused($focus, equals: .confirmPassword)
-                        .onSubmit { focus = isParent ? .pickupAddress : nil }
+                        .onSubmit { focus = nil }
                         .neonInput(focused: focus == .confirmPassword)
                 }
             }
-        }
-    }
-
-    // MARK: - Pickup Section
-
-    private var pickupSection: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            FormSectionLabel(text: "Pickup stop")
-
-            VStack(spacing: 12) {
-                labeledField("Address") {
-                    TextField("", text: $pickupAddress)
-                        .focused($focus, equals: .pickupAddress)
-                        .onSubmit { focus = .pickupLabel }
-                        .neonInput(focused: focus == .pickupAddress)
-                }
-
-                labeledField("Label (e.g. Home, Work)") {
-                    TextField("", text: $pickupLabel)
-                        .focused($focus, equals: .pickupLabel)
-                        .onSubmit { focus = nil }
-                        .neonInput(focused: focus == .pickupLabel)
-                }
-            }
-
-            Text("You'll get a notification when the bus is near this address.")
-                .font(.caption)
-                .foregroundStyle(Color.appSecondary)
         }
     }
 
@@ -155,7 +123,7 @@ struct SignUpView: View {
                     ProgressView()
                         .tint(.white)
                 }
-                Text(isBusy ? "Creating account…" : "Create account")
+                Text(isBusy ? "Creating account..." : "Create account")
             }
         }
         .buttonStyle(NeonPrimaryButtonStyle())
@@ -182,20 +150,21 @@ struct SignUpView: View {
         isBusy = true
         defer { isBusy = false }
 
+        let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedFullName = fullName.trimmingCharacters(in: .whitespacesAndNewlines)
+
         do {
             if isParent {
                 try await auth.signUpParent(
-                    email: email.trimmingCharacters(in: .whitespacesAndNewlines),
+                    email: trimmedEmail,
                     password: password,
-                    fullName: fullName.trimmingCharacters(in: .whitespacesAndNewlines),
-                    pickupAddress: pickupAddress.trimmingCharacters(in: .whitespacesAndNewlines),
-                    pickupLabel: pickupLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+                    fullName: trimmedFullName
                 )
             } else {
                 try await auth.signUpDriver(
-                    email: email.trimmingCharacters(in: .whitespacesAndNewlines),
+                    email: trimmedEmail,
                     password: password,
-                    fullName: fullName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    fullName: trimmedFullName
                 )
             }
         } catch AuthError.emailConfirmationRequired {
@@ -206,7 +175,7 @@ struct SignUpView: View {
     }
 }
 
-#Preview("Responsable") {
+#Preview("Parent") {
     NavigationStack {
         SignUpView(role: .parent)
             .environment(AuthViewModel())
@@ -214,7 +183,7 @@ struct SignUpView: View {
     .preferredColorScheme(.dark)
 }
 
-#Preview("Conductor") {
+#Preview("Driver") {
     NavigationStack {
         SignUpView(role: .driver)
             .environment(AuthViewModel())
