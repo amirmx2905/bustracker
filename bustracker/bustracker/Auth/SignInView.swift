@@ -179,7 +179,7 @@ struct SignInView: View {
             Button { Task { await signIn() } } label: {
                 HStack(spacing: 10) {
                     if isBusy { ProgressView().tint(.neonBlue) }
-                    Text(isBusy ? "Signing in…" : "Use email and password")
+                    Text(isBusy ? "Signing in…" : "Log In")
                 }
             }
             .buttonStyle(NeonOutlineButtonStyle())
@@ -188,7 +188,7 @@ struct SignInView: View {
             Button { Task { await signIn() } } label: {
                 HStack(spacing: 10) {
                     if isBusy { ProgressView().tint(.white) }
-                    Text(isBusy ? "Signing in…" : "Sign in")
+                    Text(isBusy ? "Signing in…" : "Log In")
                 }
             }
             .buttonStyle(NeonPrimaryButtonStyle())

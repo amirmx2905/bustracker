@@ -22,33 +22,61 @@ struct SignUpView: View {
 
     private var isFormValid: Bool {
         !fullName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            && !email.isEmpty
+            && emailLooksValid
             && password.count >= 6
             && password == confirmPassword
     }
 
-    private var passwordMismatch: Bool {
-        !password.isEmpty && !confirmPassword.isEmpty && password != confirmPassword
+    private var emailLooksValid: Bool {
+        let trimmed = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let atIndex = trimmed.firstIndex(of: "@"),
+              atIndex != trimmed.startIndex else { return false }
+        let domain = trimmed[trimmed.index(after: atIndex)...]
+        return domain.contains(".") && !domain.hasSuffix(".")
+    }
+
+    private var heroIcon: String { isParent ? "person.2.fill" : "bus.fill" }
+    private var heroTitle: String {
+        isParent ? "Create your\nparent account" : "Create your\ndriver account"
+    }
+    private var heroSubtitle: String {
+        isParent
+            ? "Join BusTracker to keep eyes\non every ride."
+            : "Run trips, scan QRs,\nshare GPS in real time."
+    }
+
+    private var benefits: [(icon: String, text: String)] {
+        if isParent {
+            return [
+                ("location.fill", "Real-time bus location"),
+                ("qrcode.viewfinder", "Scan-in / scan-out"),
+                ("map.fill", "Trip history with full route")
+            ]
+        } else {
+            return [
+                ("play.circle.fill", "Start trips with one tap"),
+                ("qrcode.viewfinder", "Scan students in and out"),
+                ("list.bullet.rectangle", "Full trip log and GPS history")
+            ]
+        }
     }
 
     var body: some View {
         ScrollView {
             VStack(spacing: 28) {
+                hero
+                benefitsCard
                 accountSection
-                if passwordMismatch {
-                    InlineMessage(
-                        message: "Passwords don't match.",
-                        color: .orange,
-                        icon: "exclamationmark.triangle.fill"
-                    )
-                }
+                PasswordChecklist(password: password, confirmPassword: confirmPassword)
+
                 if let error = errorMessage {
                     InlineMessage(message: error, color: .red, icon: "exclamationmark.circle.fill")
                 }
+
                 submitButton
             }
             .padding(.horizontal, 24)
-            .padding(.top, 32)
+            .padding(.top, 24)
             .padding(.bottom, 48)
         }
         .background(Color.appBg.ignoresSafeArea())
@@ -64,6 +92,68 @@ struct SignUpView: View {
             Button("Got it", role: .cancel) { }
         } message: {
             Text("We sent you a confirmation email. Once you confirm your account, sign in.")
+        }
+    }
+
+    // MARK: - Hero
+
+    private var hero: some View {
+        VStack(spacing: 16) {
+            ZStack {
+                Circle()
+                    .fill(Color.neonBlue.opacity(0.07))
+                    .frame(width: 160, height: 160)
+                    .blur(radius: 24)
+                Circle()
+                    .fill(Color.neonBlue.opacity(0.1))
+                    .frame(width: 100, height: 100)
+                Image(systemName: heroIcon)
+                    .font(.system(size: 44))
+                    .foregroundStyle(Color.neonBlue)
+                    .neonGlow()
+            }
+            .accessibilityHidden(true)
+
+            Text(heroTitle)
+                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+
+            Text(heroSubtitle)
+                .font(.subheadline)
+                .foregroundStyle(Color.appSecondary)
+                .multilineTextAlignment(.center)
+        }
+    }
+
+    // MARK: - Benefits Card
+
+    private var benefitsCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(benefits, id: \.text) { benefit in
+                HStack(spacing: 12) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.neonBlue.opacity(0.15))
+                            .frame(width: 32, height: 32)
+                        Image(systemName: benefit.icon)
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(Color.neonBlue)
+                    }
+                    Text(benefit.text)
+                        .font(.subheadline)
+                        .foregroundStyle(.white)
+                    Spacer()
+                }
+            }
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.appCard)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16)
+                .strokeBorder(Color.appBorder, lineWidth: 1)
         }
     }
 
@@ -93,7 +183,7 @@ struct SignUpView: View {
                         .neonInput(focused: focus == .email)
                 }
 
-                labeledField("Password (min. 6 characters)") {
+                labeledField("Password") {
                     SecureField("", text: $password)
                         .textContentType(.newPassword)
                         .focused($focus, equals: .password)

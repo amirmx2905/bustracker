@@ -93,17 +93,33 @@ struct InlineMessage: View {
 
 struct NeonPrimaryButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.headline)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 16)
-            .background(Color.neonBlue)
-            .foregroundStyle(.white)
-            .clipShape(RoundedRectangle(cornerRadius: 14))
-            .shadow(color: Color.neonBlue.opacity(configuration.isPressed ? 0.2 : 0.5), radius: configuration.isPressed ? 4 : 14)
-            .shadow(color: Color.neonBlue.opacity(configuration.isPressed ? 0.1 : 0.2), radius: configuration.isPressed ? 8 : 28)
-            .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
-            .animation(.easeInOut(duration: 0.15), value: configuration.isPressed)
+        Inner(configuration: configuration)
+    }
+
+    private struct Inner: View {
+        let configuration: ButtonStyleConfiguration
+        @Environment(\.isEnabled) private var isEnabled
+
+        var body: some View {
+            configuration.label
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
+                .background(isEnabled ? Color.neonBlue : Color.neonBlue.opacity(0.3))
+                .foregroundStyle(isEnabled ? Color.white : Color.white.opacity(0.55))
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .shadow(
+                    color: isEnabled ? Color.neonBlue.opacity(configuration.isPressed ? 0.2 : 0.5) : .clear,
+                    radius: configuration.isPressed ? 4 : 14
+                )
+                .shadow(
+                    color: isEnabled ? Color.neonBlue.opacity(configuration.isPressed ? 0.1 : 0.2) : .clear,
+                    radius: configuration.isPressed ? 8 : 28
+                )
+                .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
+                .animation(.easeInOut(duration: 0.15), value: configuration.isPressed)
+                .animation(.easeInOut(duration: 0.2), value: isEnabled)
+        }
     }
 }
 
@@ -111,19 +127,29 @@ struct NeonPrimaryButtonStyle: ButtonStyle {
 
 struct NeonOutlineButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.subheadline)
-            .fontWeight(.medium)
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 14)
-            .background(Color.neonBlue.opacity(configuration.isPressed ? 0.15 : 0.08))
-            .foregroundStyle(Color.neonBlue)
-            .clipShape(RoundedRectangle(cornerRadius: 14))
-            .overlay {
-                RoundedRectangle(cornerRadius: 14)
-                    .strokeBorder(Color.neonBlue.opacity(0.6), lineWidth: 1.5)
-            }
-            .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
-            .animation(.easeInOut(duration: 0.15), value: configuration.isPressed)
+        Inner(configuration: configuration)
+    }
+
+    private struct Inner: View {
+        let configuration: ButtonStyleConfiguration
+        @Environment(\.isEnabled) private var isEnabled
+
+        var body: some View {
+            configuration.label
+                .font(.subheadline)
+                .fontWeight(.medium)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(Color.neonBlue.opacity(isEnabled ? (configuration.isPressed ? 0.15 : 0.08) : 0.04))
+                .foregroundStyle(Color.neonBlue.opacity(isEnabled ? 1 : 0.4))
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(Color.neonBlue.opacity(isEnabled ? 0.6 : 0.25), lineWidth: 1.5)
+                }
+                .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
+                .animation(.easeInOut(duration: 0.15), value: configuration.isPressed)
+                .animation(.easeInOut(duration: 0.2), value: isEnabled)
+        }
     }
 }
