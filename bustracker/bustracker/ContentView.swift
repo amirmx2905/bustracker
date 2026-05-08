@@ -49,7 +49,7 @@ struct ContentView: View {
             case .parent:
                 ParentRootView(profile: profile)
             case .driver:
-                DriverHomeView(profile: profile)
+                DriverRootView(profile: profile)
             }
         }
     }

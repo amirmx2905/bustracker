@@ -1426,3 +1426,111 @@ $$;
 revoke all on function public.hide_trip_from_history(uuid) from public;
 grant execute on function public.hide_trip_from_history(uuid) to authenticated;
 grant execute on function public.hide_trip_from_history(uuid) to service_role;
+
+-- ============================================================================
+-- Phase 9b — Driver history (read-only)
+-- ============================================================================
+--
+-- Drivers can review their own past trips: route, who boarded, when. There is
+-- intentionally no hide_trip equivalent for drivers — letting a driver erase
+-- evidence of how a kid was handled would defeat the safety value of the log.
+--
+-- Drivers already have RLS to read their own trips and events; we add a
+-- matching SELECT policy on trip_positions so the existing
+-- trip_positions_latlng view returns rows for drivers' past trips. The list
+-- and per-trip events go through security-definer RPCs for aggregation and
+-- to attach lat/lng without forcing the client to decode geography.
+
+drop policy if exists "driver reads own trip positions" on public.trip_positions;
+create policy "driver reads own trip positions"
+    on public.trip_positions
+    for select
+    to authenticated
+    using (
+        exists (
+            select 1
+            from public.trips t
+            where t.id = trip_id and t.driver_id = auth.uid()
+        )
+    );
+
+create or replace function public.fetch_trip_history_for_driver()
+returns table (
+    trip_id uuid,
+    started_at timestamptz,
+    ended_at timestamptz,
+    student_names text[],
+    event_count bigint
+)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+    select
+        t.id as trip_id,
+        t.started_at,
+        t.ended_at,
+        coalesce(
+            array_agg(distinct s.full_name order by s.full_name)
+                filter (where s.full_name is not null),
+            array[]::text[]
+        ) as student_names,
+        count(distinct e.id) as event_count
+    from public.trips t
+    left join public.events e on e.trip_id = t.id
+    left join public.students s on s.id = e.student_id
+    where t.driver_id = auth.uid()
+      and t.ended_at is not null
+    group by t.id, t.started_at, t.ended_at
+    order by t.ended_at desc;
+$$;
+
+revoke all on function public.fetch_trip_history_for_driver() from public;
+grant execute on function public.fetch_trip_history_for_driver() to authenticated;
+grant execute on function public.fetch_trip_history_for_driver() to service_role;
+
+create or replace function public.fetch_trip_events_for_driver(target_trip_id uuid)
+returns table (
+    event_id uuid,
+    event_type public.event_type,
+    student_id uuid,
+    student_name text,
+    occurred_at timestamptz,
+    lat double precision,
+    lng double precision
+)
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+    current_driver_id uuid := private.require_driver_profile();
+begin
+    if not exists (
+        select 1 from public.trips t
+        where t.id = target_trip_id and t.driver_id = current_driver_id
+    ) then
+        raise exception 'Trip not found.';
+    end if;
+
+    return query
+        select
+            e.id as event_id,
+            e.type as event_type,
+            e.student_id,
+            s.full_name as student_name,
+            e.occurred_at,
+            case when e.point is not null then ST_Y(e.point::geometry) end as lat,
+            case when e.point is not null then ST_X(e.point::geometry) end as lng
+        from public.events e
+        left join public.students s on s.id = e.student_id
+        where e.trip_id = target_trip_id
+        order by e.occurred_at asc;
+end;
+$$;
+
+revoke all on function public.fetch_trip_events_for_driver(uuid) from public;
+grant execute on function public.fetch_trip_events_for_driver(uuid) to authenticated;
+grant execute on function public.fetch_trip_events_for_driver(uuid) to service_role;

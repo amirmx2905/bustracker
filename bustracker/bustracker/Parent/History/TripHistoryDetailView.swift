@@ -2,265 +2,7 @@ import CoreLocation
 import MapKit
 import SwiftUI
 
-struct ParentHistoryTabView: View {
-    @State private var trips: [TripHistoryEntry] = []
-    @State private var isLoading = false
-    @State private var errorMessage: String?
-    @State private var selectedTrip: TripHistoryEntry?
-    @State private var pendingHideTrip: TripHistoryEntry?
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 16) {
-                    if let errorMessage, trips.isEmpty {
-                        InlineMessage(
-                            message: errorMessage,
-                            color: .red,
-                            icon: "exclamationmark.circle.fill"
-                        )
-                    }
-
-                    if isLoading && trips.isEmpty {
-                        loadingCard
-                    } else if trips.isEmpty {
-                        emptyCard
-                    } else {
-                        if let errorMessage {
-                            InlineMessage(
-                                message: errorMessage,
-                                color: .orange,
-                                icon: "exclamationmark.triangle.fill"
-                            )
-                        }
-
-                        ForEach(trips) { trip in
-                            TripHistoryRow(
-                                trip: trip,
-                                onOpen: { selectedTrip = trip },
-                                onHide: { pendingHideTrip = trip }
-                            )
-                        }
-                    }
-                }
-                .padding(.horizontal, 20)
-                .padding(.top, 8)
-                .padding(.bottom, 24)
-            }
-            .background(Color.appBg.ignoresSafeArea())
-            .scrollBounceBehavior(.basedOnSize)
-            .refreshable { await loadTrips() }
-            .navigationTitle("History")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(Color.appBg, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
-            .sheet(item: $selectedTrip) { trip in
-                TripHistoryDetailView(trip: trip) {
-                    await loadTrips()
-                }
-            }
-            .alert(
-                "Hide this trip?",
-                isPresented: Binding(
-                    get: { pendingHideTrip != nil },
-                    set: { if !$0 { pendingHideTrip = nil } }
-                ),
-                presenting: pendingHideTrip
-            ) { trip in
-                Button("Cancel", role: .cancel) { }
-                Button("Hide", role: .destructive) {
-                    Task { await hide(trip: trip) }
-                }
-            } message: { _ in
-                Text("This trip will stop showing up in your history. Other parents and the driver still see it.")
-            }
-            .task {
-                guard trips.isEmpty, errorMessage == nil else { return }
-                await loadTrips()
-            }
-        }
-    }
-
-    private var loadingCard: some View {
-        VStack(spacing: 14) {
-            ProgressView().tint(.neonBlue)
-            Text("Loading past trips...")
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.white)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(28)
-        .background(Color.appCard)
-        .clipShape(RoundedRectangle(cornerRadius: 20))
-        .overlay {
-            RoundedRectangle(cornerRadius: 20)
-                .strokeBorder(Color.appBorder, lineWidth: 1)
-        }
-    }
-
-    private var emptyCard: some View {
-        VStack(spacing: 14) {
-            Image(systemName: "clock.arrow.circlepath")
-                .font(.system(size: 44, weight: .semibold))
-                .foregroundStyle(Color.neonBlue)
-
-            VStack(spacing: 4) {
-                Text("No history yet")
-                    .font(.headline)
-                    .foregroundStyle(.white)
-                Text("Once a driver finishes a trip your students were on, you'll see it here.")
-                    .font(.subheadline)
-                    .foregroundStyle(Color.appSecondary)
-                    .multilineTextAlignment(.center)
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(28)
-        .background(Color.appCard)
-        .clipShape(RoundedRectangle(cornerRadius: 20))
-        .overlay {
-            RoundedRectangle(cornerRadius: 20)
-                .strokeBorder(Color.appBorder, lineWidth: 1)
-        }
-    }
-
-    @MainActor
-    private func loadTrips() async {
-        isLoading = true
-        defer { isLoading = false }
-        do {
-            trips = try await SupabaseParentHistoryService.fetchTripHistory()
-            errorMessage = nil
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    @MainActor
-    private func hide(trip: TripHistoryEntry) async {
-        pendingHideTrip = nil
-        do {
-            try await SupabaseParentHistoryService.hideTrip(tripID: trip.tripID)
-            trips.removeAll { $0.tripID == trip.tripID }
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-}
-
-private struct TripHistoryRow: View {
-    let trip: TripHistoryEntry
-    let onOpen: () -> Void
-    let onHide: () -> Void
-
-    var body: some View {
-        Button(action: onOpen) {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(dayLabel)
-                            .font(.headline)
-                            .foregroundStyle(.white)
-                        Text(timeRangeLabel)
-                            .font(.caption)
-                            .foregroundStyle(Color.appSecondary)
-                    }
-                    Spacer()
-                    durationBadge
-                }
-
-                infoRow(
-                    icon: "person.2.fill",
-                    label: "Students",
-                    value: trip.studentNames.isEmpty ? "—" : trip.studentNames.joined(separator: ", ")
-                )
-
-                HStack(spacing: 6) {
-                    Image(systemName: "map")
-                        .font(.caption2)
-                    Text("\(trip.eventCount) event\(trip.eventCount == 1 ? "" : "s") · tap to view route")
-                }
-                .font(.caption)
-                .foregroundStyle(Color.appSecondary)
-            }
-            .padding(18)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.appCard)
-            .clipShape(RoundedRectangle(cornerRadius: 18))
-            .overlay {
-                RoundedRectangle(cornerRadius: 18)
-                    .strokeBorder(Color.appBorder, lineWidth: 1)
-            }
-        }
-        .buttonStyle(.plain)
-        .contextMenu {
-            Button(role: .destructive, action: onHide) {
-                Label("Hide from history", systemImage: "eye.slash")
-            }
-        }
-    }
-
-    private var dayLabel: String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .none
-        if Calendar.current.isDateInToday(trip.endedAt) {
-            return "Today"
-        }
-        if Calendar.current.isDateInYesterday(trip.endedAt) {
-            return "Yesterday"
-        }
-        return formatter.string(from: trip.endedAt)
-    }
-
-    private var timeRangeLabel: String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .none
-        formatter.timeStyle = .short
-        return "\(formatter.string(from: trip.startedAt)) → \(formatter.string(from: trip.endedAt))"
-    }
-
-    private var durationBadge: some View {
-        Text(durationLabel)
-            .font(.caption2.weight(.bold))
-            .foregroundStyle(Color.neonBlue)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .background(Color.neonBlue.opacity(0.15), in: Capsule())
-    }
-
-    private var durationLabel: String {
-        let interval = trip.endedAt.timeIntervalSince(trip.startedAt)
-        let minutes = max(0, Int(interval / 60))
-        if minutes < 60 {
-            return "\(minutes) min"
-        }
-        let hours = minutes / 60
-        let remaining = minutes % 60
-        return remaining == 0 ? "\(hours) h" : "\(hours)h \(remaining)m"
-    }
-
-    private func infoRow(icon: String, label: String, value: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: icon)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(Color.neonBlue)
-                .frame(width: 20)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(label)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.appSecondary)
-                Text(value)
-                    .font(.subheadline)
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.leading)
-            }
-            Spacer()
-        }
-    }
-}
-
-private struct TripHistoryDetailView: View {
+struct TripHistoryDetailView: View {
     let trip: TripHistoryEntry
     let onHidden: () async -> Void
 
@@ -466,15 +208,15 @@ private struct TripHistoryDetailView: View {
 
     private func eventRow(_ event: TripHistoryEvent) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: icon(for: event.eventType))
+            Image(systemName: TripEventStyling.icon(for: event.eventType))
                 .font(.subheadline.weight(.semibold))
-                .foregroundStyle(color(for: event.eventType))
+                .foregroundStyle(TripEventStyling.color(for: event.eventType))
                 .frame(width: 22)
             VStack(alignment: .leading, spacing: 2) {
-                Text(label(for: event.eventType))
+                Text(TripEventStyling.label(for: event.eventType))
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.white)
-                Text("\(event.studentName ?? "—") · \(timeOnly(event.occurredAt))")
+                Text("\(event.studentName ?? "—") · \(TripEventStyling.formatTime(event.occurredAt))")
                     .font(.caption)
                     .foregroundStyle(Color.appSecondary)
             }
@@ -505,52 +247,12 @@ private struct TripHistoryDetailView: View {
     private func eventMarker(for event: TripHistoryEvent) -> some View {
         ZStack {
             Circle()
-                .fill(color(for: event.eventType))
+                .fill(TripEventStyling.color(for: event.eventType))
                 .frame(width: 22, height: 22)
-            Image(systemName: icon(for: event.eventType))
+            Image(systemName: TripEventStyling.icon(for: event.eventType))
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(.white)
         }
-    }
-
-    private func icon(for type: String) -> String {
-        switch type {
-        case "check_in": return "arrow.down.to.line"
-        case "check_out": return "arrow.up.from.line"
-        case "destination_enter": return "flag.checkered"
-        case "destination_exit": return "flag.slash"
-        case "pickup_proximity": return "figure.walk"
-        default: return "questionmark.circle"
-        }
-    }
-
-    private func color(for type: String) -> Color {
-        switch type {
-        case "check_in": return .green
-        case "check_out": return .neonBlue
-        case "destination_enter": return .orange
-        case "destination_exit": return .yellow
-        case "pickup_proximity": return .purple
-        default: return .gray
-        }
-    }
-
-    private func label(for type: String) -> String {
-        switch type {
-        case "check_in": return "Boarded"
-        case "check_out": return "Got off"
-        case "destination_enter": return "Arrived at destination"
-        case "destination_exit": return "Left destination"
-        case "pickup_proximity": return "Near pickup"
-        default: return type
-        }
-    }
-
-    private func timeOnly(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .none
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
     }
 
     @MainActor
