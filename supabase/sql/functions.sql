@@ -9,6 +9,14 @@
 create schema if not exists private;
 revoke all on schema private from public;
 
+-- ============================================================================
+-- Safety: drop policies that are known to cause infinite RLS recursion if they
+-- linger from older deploys. They're absent from schema.sql but get applied
+-- here too so re-running functions.sql alone is enough to recover.
+-- ============================================================================
+drop policy if exists "parent sees relevant trips" on public.trips;
+drop policy if exists "parent reads positions while child onboard" on public.trip_positions;
+
 -- Auth helpers --------------------------------------------------------------
 
 create or replace function private.require_parent_profile()
@@ -674,3 +682,747 @@ grant execute on function public.link_student_by_qr(text) to service_role;
 grant execute on function public.add_destination(uuid, text, text, double precision, double precision) to service_role;
 grant execute on function public.update_destination(uuid, text, text, double precision, double precision) to service_role;
 grant execute on function public.delete_destination(uuid) to service_role;
+
+-- ============================================================================
+-- Phase 4 — Trips and GPS tracking
+-- ============================================================================
+--
+-- Trip lifecycle goes through security-definer RPCs so the "one active trip per
+-- driver" rule is enforced server-side and atomic with role checks. GPS positions
+-- and gaps are written directly by the driver app (RLS gates ownership), since
+-- they're high-volume single-row writes that don't need a wrapper.
+
+create or replace function private.require_driver_profile()
+returns uuid
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+declare
+    current_user_id uuid := auth.uid();
+    -- Avoid the `current_role` keyword collision (same trap that bit
+    -- private.require_parent_profile previously).
+    profile_role public.user_role;
+begin
+    if current_user_id is null then
+        raise exception 'Authentication required.';
+    end if;
+
+    select p.role
+    into profile_role
+    from public.profiles as p
+    where p.id = current_user_id;
+
+    if profile_role is null then
+        raise exception 'Your profile is missing.';
+    end if;
+
+    if profile_role <> 'driver' then
+        raise exception 'Only driver accounts can manage trips.';
+    end if;
+
+    return current_user_id;
+end;
+$$;
+
+create or replace function private.start_trip_impl()
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+    current_driver_id uuid := private.require_driver_profile();
+    new_trip_id uuid;
+begin
+    if exists (
+        select 1
+        from public.trips
+        where driver_id = current_driver_id
+          and ended_at is null
+    ) then
+        raise exception 'You already have an active trip. End it before starting another.';
+    end if;
+
+    insert into public.trips (driver_id)
+    values (current_driver_id)
+    returning id into new_trip_id;
+
+    return new_trip_id;
+exception
+    when unique_violation then
+        -- The one_active_trip_per_driver partial unique index covers the race.
+        raise exception 'You already have an active trip. End it before starting another.';
+end;
+$$;
+
+create or replace function private.end_trip_impl(target_trip_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+    current_driver_id uuid := private.require_driver_profile();
+begin
+    update public.trips
+    set ended_at = now()
+    where id = target_trip_id
+      and driver_id = current_driver_id
+      and ended_at is null;
+
+    if not found then
+        raise exception 'No active trip with that id belongs to you.';
+    end if;
+end;
+$$;
+
+revoke all on function private.require_driver_profile() from public;
+revoke all on function private.start_trip_impl() from public;
+revoke all on function private.end_trip_impl(uuid) from public;
+
+grant execute on function private.require_driver_profile() to authenticated;
+grant execute on function private.start_trip_impl() to authenticated;
+grant execute on function private.end_trip_impl(uuid) to authenticated;
+
+grant execute on function private.require_driver_profile() to service_role;
+grant execute on function private.start_trip_impl() to service_role;
+grant execute on function private.end_trip_impl(uuid) to service_role;
+
+-- Public wrappers ------------------------------------------------------------
+
+create or replace function public.start_trip()
+returns uuid
+language sql
+set search_path = public
+as $$
+    select private.start_trip_impl();
+$$;
+
+create or replace function public.end_trip(target_trip_id uuid)
+returns void
+language sql
+set search_path = public
+as $$
+    select private.end_trip_impl(target_trip_id);
+$$;
+
+revoke all on function public.start_trip() from public;
+revoke all on function public.end_trip(uuid) from public;
+
+grant execute on function public.start_trip() to authenticated;
+grant execute on function public.end_trip(uuid) to authenticated;
+
+grant execute on function public.start_trip() to service_role;
+grant execute on function public.end_trip(uuid) to service_role;
+
+-- gps_gaps: driver writes directly; RLS limits to their own trips' gaps.
+-- trip_positions already has a "driver writes own positions" insert policy in
+-- schema.sql and a corresponding grant — we only add the gaps policy here so
+-- the schema stays the canonical place for table DDL.
+
+drop policy if exists "driver manages own trip gaps" on public.gps_gaps;
+create policy "driver manages own trip gaps"
+    on public.gps_gaps
+    for all
+    to authenticated
+    using (
+        exists (
+            select 1
+            from public.trips t
+            where t.id = trip_id and t.driver_id = auth.uid()
+        )
+    )
+    with check (
+        exists (
+            select 1
+            from public.trips t
+            where t.id = trip_id and t.driver_id = auth.uid()
+        )
+    );
+
+grant select, insert, update on table public.gps_gaps to authenticated;
+
+-- ============================================================================
+-- Phase 5 — QR scan events
+-- ============================================================================
+--
+-- A single record_scan RPC handles:
+--   1. resolving the QR payload to an active student (or recording unknown_scan)
+--   2. inferring check_in vs check_out from the student's last event in the trip
+--   3. enforcing the 5-second anti-bounce window per (trip, qr_payload)
+--
+-- Storing raw_qr_payload on every scan event (not just unknown_scan) lets the
+-- anti-bounce check be a simple lookup against the events table — no extra
+-- bookkeeping table.
+
+create or replace function private.record_scan_impl(
+    target_trip_id uuid,
+    qr_payload text,
+    scan_lat double precision default null,
+    scan_lng double precision default null
+)
+returns table (
+    outcome text,
+    event_id uuid,
+    student_id uuid,
+    student_name text
+)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+    current_driver_id uuid := private.require_driver_profile();
+    trimmed_payload text := nullif(btrim(qr_payload), '');
+    target_trip_record record;
+    matched_student record;
+    last_alt_event public.event_type;
+    new_event_type public.event_type;
+    new_event_id uuid;
+    scan_point geography;
+begin
+    if trimmed_payload is null then
+        raise exception 'Empty QR payload.';
+    end if;
+
+    select t.id, t.ended_at into target_trip_record
+    from public.trips as t
+    where t.id = target_trip_id and t.driver_id = current_driver_id;
+
+    if not found then
+        raise exception 'Trip not found.';
+    end if;
+
+    if target_trip_record.ended_at is not null then
+        raise exception 'Trip is not active.';
+    end if;
+
+    -- Anti-bounce: any scan event with this payload in the last 5s for this trip.
+    if exists (
+        select 1
+        from public.events e
+        where e.trip_id = target_trip_id
+          and e.raw_qr_payload = trimmed_payload
+          and e.occurred_at > now() - interval '5 seconds'
+    ) then
+        return query select 'duplicate'::text, null::uuid, null::uuid, null::text;
+        return;
+    end if;
+
+    if scan_lat is not null and scan_lng is not null then
+        scan_point := ST_SetSRID(ST_MakePoint(scan_lng, scan_lat), 4326)::geography;
+    end if;
+
+    -- Resolve the QR to an active student.
+    select s.id, s.full_name into matched_student
+    from public.students as s
+    where s.qr_code = trimmed_payload and s.active
+    limit 1;
+
+    if matched_student is null then
+        -- We deliberately don't persist unknown_scans. The driver gets immediate
+        -- feedback in the UI, and saving every random QR (or accidental camera
+        -- catch) would let anyone bloat the events table with garbage. If we
+        -- ever need an audit trail later, this is the line that brings it back.
+        return query select 'unknown_scan'::text, null::uuid, null::uuid, null::text;
+        return;
+    end if;
+
+    -- Infer check_in vs check_out from the student's last alternation event in this trip.
+    select e.type into last_alt_event
+    from public.events e
+    where e.trip_id = target_trip_id
+      and e.student_id = matched_student.id
+      and e.type in ('check_in', 'check_out')
+    order by e.occurred_at desc
+    limit 1;
+
+    if last_alt_event is null or last_alt_event = 'check_out' then
+        new_event_type := 'check_in';
+    else
+        new_event_type := 'check_out';
+    end if;
+
+    insert into public.events (trip_id, type, student_id, raw_qr_payload, point)
+    values (target_trip_id, new_event_type, matched_student.id, trimmed_payload, scan_point)
+    returning id into new_event_id;
+
+    return query select new_event_type::text, new_event_id, matched_student.id, matched_student.full_name;
+end;
+$$;
+
+revoke all on function private.record_scan_impl(uuid, text, double precision, double precision) from public;
+grant execute on function private.record_scan_impl(uuid, text, double precision, double precision) to authenticated;
+grant execute on function private.record_scan_impl(uuid, text, double precision, double precision) to service_role;
+
+create or replace function public.record_scan(
+    target_trip_id uuid,
+    qr_payload text,
+    scan_lat double precision default null,
+    scan_lng double precision default null
+)
+returns table (
+    outcome text,
+    event_id uuid,
+    student_id uuid,
+    student_name text
+)
+language sql
+set search_path = public
+as $$
+    select * from private.record_scan_impl(target_trip_id, qr_payload, scan_lat, scan_lng);
+$$;
+
+revoke all on function public.record_scan(uuid, text, double precision, double precision) from public;
+grant execute on function public.record_scan(uuid, text, double precision, double precision) to authenticated;
+grant execute on function public.record_scan(uuid, text, double precision, double precision) to service_role;
+
+-- View that joins events to student names for the driver's live event log.
+-- security_invoker = on means the view runs with the caller's RLS, so the
+-- "driver sees own trip events" policy on `events` still gates access. For the
+-- LEFT JOIN to students to actually return names, we also need the policy
+-- below — without it the students rows get filtered by RLS and the driver
+-- sees NULL student_name even for their own trip's check_ins.
+
+drop policy if exists "drivers see students from their trip events" on public.students;
+create policy "drivers see students from their trip events"
+    on public.students
+    for select
+    to authenticated
+    using (
+        exists (
+            select 1
+            from public.events e
+            join public.trips t on t.id = e.trip_id
+            where e.student_id = students.id
+              and t.driver_id = auth.uid()
+        )
+    );
+
+drop view if exists public.trip_event_log;
+create view public.trip_event_log
+with (security_invoker = on)
+as
+    select
+        e.id,
+        e.trip_id,
+        e.type,
+        e.student_id,
+        s.full_name as student_name,
+        e.raw_qr_payload,
+        e.occurred_at
+    from public.events e
+    left join public.students s on s.id = e.student_id;
+
+grant select on public.trip_event_log to authenticated;
+grant select on public.trip_event_log to service_role;
+
+-- ============================================================================
+-- Phase 6 — Geofencing and automated events
+-- ============================================================================
+--
+-- Server-side only: a trigger on trip_positions evaluates geofences after every
+-- GPS push. Three event types come out of this:
+--
+--   destination_enter  — bus enters the 150m radius of a destination of a
+--                        student with an open check_in. Fires once per
+--                        (trip, student, destination); enforced by the
+--                        dest_enter_once_per_student partial unique index.
+--
+--   destination_exit   — bus leaves the 150m radius after having entered.
+--                        Fires once per (trip, student, destination), gated
+--                        by the existence of the matching enter and the
+--                        absence of a prior exit.
+--
+--   pickup_proximity   — bus within 500m of a student's pickup_point while
+--                        that student has an open check_in. One row per
+--                        linked parent; the pickup_prox_once_per_parent
+--                        partial unique index dedupes per (trip, parent).
+--
+-- The 5-minute ETA proximity threshold from the spec is intentionally not
+-- implemented yet — it requires speed / heading-based trajectory work.
+-- 500m radius alone is shippable and matches the "lo que ocurra primero" gate.
+
+create or replace function private.process_position_geofences()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+    target_trip_id uuid := NEW.trip_id;
+    position_point geography := NEW.point;
+begin
+    -- destination_enter
+    insert into public.events (trip_id, type, student_id, destination_id, point)
+    select target_trip_id, 'destination_enter', s.id, d.id, position_point
+    from public.students s
+    join public.destinations d on d.student_id = s.id
+    where ST_DWithin(d.point, position_point, 150)
+      and exists (
+          select 1
+          from public.events e
+          where e.trip_id = target_trip_id
+            and e.student_id = s.id
+            and e.type = 'check_in'
+            and not exists (
+                select 1
+                from public.events e2
+                where e2.trip_id = target_trip_id
+                  and e2.student_id = s.id
+                  and e2.type = 'check_out'
+                  and e2.occurred_at > e.occurred_at
+            )
+      )
+    on conflict do nothing;
+
+    -- destination_exit (only if a matching enter exists and no exit yet)
+    insert into public.events (trip_id, type, student_id, destination_id, point)
+    select
+        target_trip_id,
+        'destination_exit',
+        enter_evt.student_id,
+        enter_evt.destination_id,
+        position_point
+    from public.events enter_evt
+    join public.destinations d on d.id = enter_evt.destination_id
+    where enter_evt.trip_id = target_trip_id
+      and enter_evt.type = 'destination_enter'
+      and not ST_DWithin(d.point, position_point, 150)
+      and not exists (
+          select 1
+          from public.events ex
+          where ex.trip_id = target_trip_id
+            and ex.student_id = enter_evt.student_id
+            and ex.destination_id = enter_evt.destination_id
+            and ex.type = 'destination_exit'
+      );
+
+    -- pickup_proximity (one per parent; partial unique index dedupes)
+    insert into public.events (trip_id, type, student_id, parent_id, point)
+    select target_trip_id, 'pickup_proximity', s.id, sp.parent_id, position_point
+    from public.students s
+    join public.student_parents sp on sp.student_id = s.id
+    where ST_DWithin(s.pickup_point, position_point, 500)
+      and exists (
+          select 1
+          from public.events e
+          where e.trip_id = target_trip_id
+            and e.student_id = s.id
+            and e.type = 'check_in'
+            and not exists (
+                select 1
+                from public.events e2
+                where e2.trip_id = target_trip_id
+                  and e2.student_id = s.id
+                  and e2.type = 'check_out'
+                  and e2.occurred_at > e.occurred_at
+            )
+      )
+    on conflict do nothing;
+
+    return NEW;
+end;
+$$;
+
+drop trigger if exists trip_positions_geofence on public.trip_positions;
+create trigger trip_positions_geofence
+    after insert on public.trip_positions
+    for each row execute function private.process_position_geofences();
+
+-- ============================================================================
+-- Phase 8 — Parent live map
+-- ============================================================================
+--
+-- Re-introduces the parent visibility on trips and trip_positions that we had
+-- to drop earlier because the original SQL caused infinite RLS recursion. This
+-- version routes the "is this trip relevant to me as a parent?" check through a
+-- security-definer helper, mirroring the private.is_parent_of pattern. The
+-- helper bypasses RLS internally so it doesn't trigger the parent-policy on
+-- trips while evaluating the parent-policy on trips.
+--
+-- The view trip_positions_latlng exposes the geography column as plain numeric
+-- lat/lng so the iOS client can decode it without PostGIS gymnastics.
+
+create or replace function private.has_active_check_in_on_trip(target_trip_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+    select exists (
+        select 1
+        from public.events e
+        join public.student_parents sp on sp.student_id = e.student_id
+        where e.trip_id = target_trip_id
+          and sp.parent_id = auth.uid()
+          and e.type = 'check_in'
+          and not exists (
+              select 1
+              from public.events e2
+              where e2.trip_id = e.trip_id
+                and e2.student_id = e.student_id
+                and e2.type = 'check_out'
+                and e2.occurred_at > e.occurred_at
+          )
+    );
+$$;
+
+revoke all on function private.has_active_check_in_on_trip(uuid) from public;
+grant execute on function private.has_active_check_in_on_trip(uuid) to authenticated;
+grant execute on function private.has_active_check_in_on_trip(uuid) to service_role;
+
+drop policy if exists "parent sees relevant trips" on public.trips;
+create policy "parent sees relevant trips"
+    on public.trips
+    for select
+    to authenticated
+    using (private.has_active_check_in_on_trip(trips.id));
+
+drop policy if exists "parent reads positions while child onboard" on public.trip_positions;
+create policy "parent reads positions while child onboard"
+    on public.trip_positions
+    for select
+    to authenticated
+    using (private.has_active_check_in_on_trip(trip_positions.trip_id));
+
+-- Enriched query for the parent home: one row per (trip, onboard student).
+-- Security-definer because joining events / students / student_parents under
+-- caller RLS would force every parent to also have SELECT on rows that are
+-- only justified by the join.
+
+create or replace function public.fetch_active_trips_for_parent()
+returns table (
+    trip_id uuid,
+    student_id uuid,
+    student_name text,
+    check_in_at timestamptz,
+    trip_started_at timestamptz
+)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+    select
+        e.trip_id,
+        e.student_id,
+        s.full_name,
+        e.occurred_at as check_in_at,
+        t.started_at as trip_started_at
+    from public.events e
+    join public.students s on s.id = e.student_id
+    join public.student_parents sp on sp.student_id = e.student_id
+    join public.trips t on t.id = e.trip_id
+    where sp.parent_id = auth.uid()
+      and e.type = 'check_in'
+      and t.ended_at is null
+      and not exists (
+          select 1
+          from public.events e2
+          where e2.trip_id = e.trip_id
+            and e2.student_id = e.student_id
+            and e2.type = 'check_out'
+            and e2.occurred_at > e.occurred_at
+      )
+    order by e.occurred_at desc;
+$$;
+
+revoke all on function public.fetch_active_trips_for_parent() from public;
+grant execute on function public.fetch_active_trips_for_parent() to authenticated;
+grant execute on function public.fetch_active_trips_for_parent() to service_role;
+
+-- Geography-free positions view for client decoding. RLS still applies via the
+-- underlying trip_positions table.
+
+drop view if exists public.trip_positions_latlng;
+create view public.trip_positions_latlng
+with (security_invoker = on)
+as
+    select
+        tp.id,
+        tp.trip_id,
+        ST_Y(tp.point::geometry) as lat,
+        ST_X(tp.point::geometry) as lng,
+        tp.recorded_at
+    from public.trip_positions tp;
+
+grant select on public.trip_positions_latlng to authenticated;
+grant select on public.trip_positions_latlng to service_role;
+
+-- ============================================================================
+-- Phase 9 — Parent history
+-- ============================================================================
+--
+-- Past trips a parent can review, with the trip's full GPS path and the events
+-- involving the parent's students. The parent RLS on trip_positions only
+-- exposes positions while the student is currently checked in (live map), so
+-- history goes through security-definer RPCs that gate on
+-- private.parent_can_view_trip — the parent must have at least one event tied
+-- to one of their students on that trip.
+--
+-- Soft-delete writes one history_deletions row per (parent, event) for every
+-- event of that trip belonging to the parent's students. The existing
+-- "parent sees own students events" policy already filters those out, so the
+-- trip simply stops appearing in fetch_trip_history_for_parent.
+
+create or replace function private.parent_can_view_trip(target_trip_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+    select exists (
+        select 1
+        from public.events e
+        join public.student_parents sp on sp.student_id = e.student_id
+        where e.trip_id = target_trip_id
+          and sp.parent_id = auth.uid()
+    );
+$$;
+
+revoke all on function private.parent_can_view_trip(uuid) from public;
+grant execute on function private.parent_can_view_trip(uuid) to authenticated;
+grant execute on function private.parent_can_view_trip(uuid) to service_role;
+
+create or replace function public.fetch_trip_history_for_parent()
+returns table (
+    trip_id uuid,
+    started_at timestamptz,
+    ended_at timestamptz,
+    student_names text[],
+    event_count bigint
+)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+    select
+        t.id as trip_id,
+        t.started_at,
+        t.ended_at,
+        array_agg(distinct s.full_name order by s.full_name) as student_names,
+        count(distinct e.id) as event_count
+    from public.trips t
+    join public.events e on e.trip_id = t.id
+    join public.student_parents sp on sp.student_id = e.student_id
+    join public.students s on s.id = e.student_id
+    where sp.parent_id = auth.uid()
+      and t.ended_at is not null
+      and not exists (
+          select 1
+          from public.history_deletions hd
+          where hd.parent_id = auth.uid()
+            and hd.event_id = e.id
+      )
+    group by t.id, t.started_at, t.ended_at
+    having count(distinct e.id) > 0
+    order by t.ended_at desc;
+$$;
+
+revoke all on function public.fetch_trip_history_for_parent() from public;
+grant execute on function public.fetch_trip_history_for_parent() to authenticated;
+grant execute on function public.fetch_trip_history_for_parent() to service_role;
+
+create or replace function public.fetch_trip_path_for_parent(target_trip_id uuid)
+returns table (lat double precision, lng double precision, recorded_at timestamptz)
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+begin
+    if not private.parent_can_view_trip(target_trip_id) then
+        raise exception 'You cannot view this trip.';
+    end if;
+
+    return query
+        select
+            ST_Y(tp.point::geometry) as lat,
+            ST_X(tp.point::geometry) as lng,
+            tp.recorded_at
+        from public.trip_positions tp
+        where tp.trip_id = target_trip_id
+        order by tp.recorded_at asc;
+end;
+$$;
+
+revoke all on function public.fetch_trip_path_for_parent(uuid) from public;
+grant execute on function public.fetch_trip_path_for_parent(uuid) to authenticated;
+grant execute on function public.fetch_trip_path_for_parent(uuid) to service_role;
+
+create or replace function public.fetch_trip_events_for_parent(target_trip_id uuid)
+returns table (
+    event_id uuid,
+    event_type public.event_type,
+    student_id uuid,
+    student_name text,
+    occurred_at timestamptz,
+    lat double precision,
+    lng double precision
+)
+language plpgsql
+stable
+security definer
+set search_path = public
+as $$
+begin
+    if not private.parent_can_view_trip(target_trip_id) then
+        raise exception 'You cannot view this trip.';
+    end if;
+
+    return query
+        select
+            e.id as event_id,
+            e.type as event_type,
+            e.student_id,
+            s.full_name as student_name,
+            e.occurred_at,
+            case when e.point is not null then ST_Y(e.point::geometry) end as lat,
+            case when e.point is not null then ST_X(e.point::geometry) end as lng
+        from public.events e
+        join public.student_parents sp
+            on sp.student_id = e.student_id and sp.parent_id = auth.uid()
+        join public.students s on s.id = e.student_id
+        where e.trip_id = target_trip_id
+          and not exists (
+              select 1
+              from public.history_deletions hd
+              where hd.parent_id = auth.uid()
+                and hd.event_id = e.id
+          )
+        order by e.occurred_at asc;
+end;
+$$;
+
+revoke all on function public.fetch_trip_events_for_parent(uuid) from public;
+grant execute on function public.fetch_trip_events_for_parent(uuid) to authenticated;
+grant execute on function public.fetch_trip_events_for_parent(uuid) to service_role;
+
+create or replace function public.hide_trip_from_history(target_trip_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+    current_parent_id uuid := private.require_parent_profile();
+begin
+    insert into public.history_deletions (parent_id, event_id)
+    select current_parent_id, e.id
+    from public.events e
+    join public.student_parents sp on sp.student_id = e.student_id
+    where e.trip_id = target_trip_id
+      and sp.parent_id = current_parent_id
+    on conflict do nothing;
+end;
+$$;
+
+revoke all on function public.hide_trip_from_history(uuid) from public;
+grant execute on function public.hide_trip_from_history(uuid) to authenticated;
+grant execute on function public.hide_trip_from_history(uuid) to service_role;

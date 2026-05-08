@@ -47,20 +47,27 @@ enum QRScanner {
 struct QRScannerView: UIViewControllerRepresentable {
     let onScan: (String) -> Void
     let onError: (QRScannerError) -> Void
+    /// When non-nil, the scanner re-arms itself after this many seconds following each scan,
+    /// enabling continuous scanning. nil = single-shot (the original behavior).
+    var rearmAfter: Double? = nil
 
     func makeUIViewController(context: Context) -> QRScannerViewController {
         let controller = QRScannerViewController()
         controller.onScan = onScan
         controller.onError = onError
+        controller.rearmAfter = rearmAfter
         return controller
     }
 
-    func updateUIViewController(_ uiViewController: QRScannerViewController, context: Context) { }
+    func updateUIViewController(_ uiViewController: QRScannerViewController, context: Context) {
+        uiViewController.rearmAfter = rearmAfter
+    }
 }
 
 final class QRScannerViewController: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
     var onScan: ((String) -> Void)?
     var onError: ((QRScannerError) -> Void)?
+    var rearmAfter: Double?
 
     private let session = AVCaptureSession()
     private let sessionQueue = DispatchQueue(label: "com.bustracker.qrscanner.session")
@@ -139,5 +146,14 @@ final class QRScannerViewController: UIViewController, AVCaptureMetadataOutputOb
 
         hasReportedScan = true
         onScan?(payload)
+
+        // Continuous mode: re-arm after the requested cooldown so the next student
+        // can scan without any tap. The 5s server-side anti-bounce still gates
+        // the same QR being re-emitted as a duplicate event.
+        if let rearmAfter, rearmAfter > 0 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + rearmAfter) { [weak self] in
+                self?.hasReportedScan = false
+            }
+        }
     }
 }

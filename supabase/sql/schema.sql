@@ -295,28 +295,13 @@ create policy "driver own trips"
     using (driver_id = auth.uid())
     with check (driver_id = auth.uid());
 
+-- "parent sees relevant trips" intentionally NOT created here.
+-- It would recurse: this policy queries events, the events driver policy
+-- queries trips, and Postgres evaluates all permissive policies (OR'd) on
+-- every row, causing infinite recursion. Phase 8 (parent live map) will add
+-- this back via a private.security-definer helper that bypasses RLS for the
+-- inner check, mirroring the private.is_parent_of pattern.
 drop policy if exists "parent sees relevant trips" on public.trips;
-create policy "parent sees relevant trips"
-    on public.trips
-    for select
-    using (
-        exists (
-            select 1
-            from public.events e
-            join public.student_parents sp on sp.student_id = e.student_id
-            where e.trip_id = trips.id
-              and sp.parent_id = auth.uid()
-              and e.type = 'check_in'
-              and not exists (
-                  select 1
-                  from public.events e2
-                  where e2.trip_id = e.trip_id
-                    and e2.student_id = e.student_id
-                    and e2.type = 'check_out'
-                    and e2.occurred_at > e.occurred_at
-              )
-        )
-    );
 
 drop policy if exists "driver writes own positions" on public.trip_positions;
 create policy "driver writes own positions"
@@ -330,28 +315,10 @@ create policy "driver writes own positions"
         )
     );
 
+-- "parent reads positions while child onboard" intentionally NOT created here.
+-- Same reason as above — recursion through the events policies. Phase 8 adds
+-- this back with a security-definer helper.
 drop policy if exists "parent reads positions while child onboard" on public.trip_positions;
-create policy "parent reads positions while child onboard"
-    on public.trip_positions
-    for select
-    using (
-        exists (
-            select 1
-            from public.events e
-            join public.student_parents sp on sp.student_id = e.student_id
-            where e.trip_id = trip_positions.trip_id
-              and sp.parent_id = auth.uid()
-              and e.type = 'check_in'
-              and not exists (
-                  select 1
-                  from public.events e2
-                  where e2.trip_id = e.trip_id
-                    and e2.student_id = e.student_id
-                    and e2.type = 'check_out'
-                    and e2.occurred_at > e.occurred_at
-              )
-        )
-    );
 
 drop policy if exists "driver sees own trip events" on public.events;
 create policy "driver sees own trip events"

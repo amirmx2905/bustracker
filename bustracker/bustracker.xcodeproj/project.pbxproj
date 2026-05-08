@@ -283,10 +283,12 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Use the camera to scan student QR codes.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Use your location to center the map when picking pickup or destination addresses.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "Use Face ID to unlock BusTracker quickly.";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Drivers report GPS while a trip is active, including when the phone is locked, so parents can see the bus location and arrival notifications fire.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Use your location to center the map when picking pickup or destination addresses.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UIBackgroundModes = location;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
@@ -321,10 +323,12 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSCameraUsageDescription = "Use the camera to scan student QR codes.";
-				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Use your location to center the map when picking pickup or destination addresses.";
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "Use Face ID to unlock BusTracker quickly.";
+				INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription = "Drivers report GPS while a trip is active, including when the phone is locked, so parents can see the bus location and arrival notifications fire.";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "Use your location to center the map when picking pickup or destination addresses.";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UIBackgroundModes = location;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";

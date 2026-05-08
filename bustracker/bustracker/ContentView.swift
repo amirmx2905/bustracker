@@ -47,7 +47,7 @@ struct ContentView: View {
         case .authenticated(let profile):
             switch profile.role {
             case .parent:
-                ParentHomeView(profile: profile)
+                ParentRootView(profile: profile)
             case .driver:
                 DriverHomeView(profile: profile)
             }
