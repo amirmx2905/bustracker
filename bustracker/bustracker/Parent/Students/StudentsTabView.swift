@@ -9,6 +9,7 @@ struct StudentsTabView: View {
     @State private var showStudentCreator = false
     @State private var showLinkStudent = false
     @State private var selectedStudent: StudentDirectoryEntry?
+    @State private var qrStudent: StudentDirectoryEntry?
 
     private var firstName: String {
         let formatter = PersonNameComponentsFormatter()
@@ -16,10 +17,6 @@ struct StudentsTabView: View {
             return PersonNameComponentsFormatter.localizedString(from: components, style: .short)
         }
         return profile.fullName
-    }
-
-    private var destinationCount: Int {
-        students.reduce(0) { $0 + $1.destinations.count }
     }
 
     var body: some View {
@@ -50,9 +47,11 @@ struct StudentsTabView: View {
                         }
 
                         ForEach(students) { entry in
-                            StudentCard(entry: entry) {
-                                selectedStudent = entry
-                            }
+                            StudentCard(
+                                entry: entry,
+                                onShowQR: { qrStudent = entry },
+                                onManage: { selectedStudent = entry }
+                            )
                         }
                     }
                 }
@@ -108,6 +107,28 @@ struct StudentsTabView: View {
                     }
                 }
             }
+            .sheet(item: $qrStudent) { entry in
+                NavigationStack {
+                    ScrollView {
+                        StudentQRDisplayCard(
+                            qrCode: entry.student.qrCode,
+                            isActive: entry.student.active
+                        )
+                        .padding(20)
+                    }
+                    .background(Color.appBg.ignoresSafeArea())
+                    .navigationTitle(entry.student.fullName)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbarBackground(Color.appBg, for: .navigationBar)
+                    .toolbarBackground(.visible, for: .navigationBar)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Done") { qrStudent = nil }
+                                .foregroundStyle(Color.neonBlue)
+                        }
+                    }
+                }
+            }
             .task {
                 guard students.isEmpty, errorMessage == nil else { return }
                 await loadStudents()
@@ -116,16 +137,12 @@ struct StudentsTabView: View {
     }
 
     private var headerCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        HStack(alignment: .center) {
             Text("Hi, \(firstName)")
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(.white)
-
-            HStack(spacing: 10) {
-                statPill(value: "\(students.count)", label: "Students")
-                statPill(value: "\(destinationCount)", label: "Stops")
-                statPill(value: isLoading ? "Syncing" : "Ready", label: "Status")
-            }
+            Spacer()
+            studentCountBadge
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(20)
@@ -137,20 +154,13 @@ struct StudentsTabView: View {
         }
     }
 
-    private func statPill(value: String, label: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label.uppercased())
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(Color.appSecondary)
-            Text(value)
-                .font(.headline)
-                .foregroundStyle(.white)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.appInput)
-        .clipShape(RoundedRectangle(cornerRadius: 14))
+    private var studentCountBadge: some View {
+        Text("\(students.count) student\(students.count == 1 ? "" : "s")")
+            .font(.caption.weight(.bold))
+            .foregroundStyle(Color.neonBlue)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Color.neonBlue.opacity(0.15), in: Capsule())
     }
 
     private var loadingCard: some View {
@@ -215,52 +225,122 @@ struct StudentsTabView: View {
 
 private struct StudentCard: View {
     let entry: StudentDirectoryEntry
+    let onShowQR: () -> Void
     let onManage: () -> Void
 
     var body: some View {
-        Button(action: onManage) {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(entry.student.fullName)
-                            .font(.headline)
-                            .foregroundStyle(.white)
-                        Text("Born \(entry.student.birthDateDisplay)")
-                            .font(.caption)
-                            .foregroundStyle(Color.appSecondary)
-                    }
-                    Spacer()
-                    statusBadge
-                }
-
-                infoRow(icon: "figure.walk", label: "Pickup", value: entry.student.pickupAddress)
-
-                if entry.destinations.isEmpty {
-                    infoRow(icon: "flag.slash", label: "Destination", value: "No destination has been assigned yet.")
-                } else {
-                    ForEach(entry.destinations) { destination in
-                        infoRow(icon: "flag.checkered", label: destination.label, value: destination.address)
-                    }
-                }
-
-                HStack(spacing: 6) {
-                    Image(systemName: "qrcode")
-                        .font(.caption2)
-                    Text("QR ready · tap to view")
-                }
-                .font(.caption)
-                .foregroundStyle(Color.appSecondary)
-            }
-            .padding(18)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Color.appCard)
-            .clipShape(RoundedRectangle(cornerRadius: 18))
-            .overlay {
-                RoundedRectangle(cornerRadius: 18)
-                    .strokeBorder(Color.appBorder, lineWidth: 1)
-            }
+        VStack(spacing: 14) {
+            headerRow
+            pickupRow
+            destinationsRow
+            divider
+            actionsRow
         }
-        .buttonStyle(.plain)
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.appCard)
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18)
+                .strokeBorder(Color.appBorder, lineWidth: 1)
+        }
+    }
+
+    private var headerRow: some View {
+        HStack(spacing: 14) {
+            ZStack {
+                Circle()
+                    .fill(Color.neonBlue.opacity(0.15))
+                    .frame(width: 44, height: 44)
+                    .overlay {
+                        Circle().strokeBorder(Color.neonBlue.opacity(0.4), lineWidth: 1)
+                    }
+                Image(systemName: "person.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(Color.neonBlue)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.student.fullName)
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                Text("Born \(entry.student.birthDateDisplay)")
+                    .font(.caption)
+                    .foregroundStyle(Color.appSecondary)
+            }
+
+            Spacer()
+
+            statusBadge
+        }
+    }
+
+    private var pickupRow: some View {
+        infoRow(
+            icon: "figure.walk",
+            primary: "Pickup",
+            secondary: entry.student.pickupAddress
+        )
+    }
+
+    private var destinationsRow: some View {
+        let count = entry.destinations.count
+        if count == 0 {
+            return AnyView(infoRow(
+                icon: "flag.slash",
+                primary: "No destinations",
+                secondary: "Add one in Manage to enable this student."
+            ))
+        }
+        let title = "\(count) destination\(count == 1 ? "" : "s")"
+        let names = entry.destinations.map(\.label).joined(separator: ", ")
+        return AnyView(infoRow(
+            icon: "flag.checkered",
+            primary: title,
+            secondary: names
+        ))
+    }
+
+    private var divider: some View {
+        Rectangle()
+            .fill(Color.appBorder.opacity(0.6))
+            .frame(height: 1)
+    }
+
+    private var actionsRow: some View {
+        HStack(spacing: 0) {
+            Button(action: onShowQR) {
+                HStack(spacing: 8) {
+                    Image(systemName: "qrcode")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Show QR")
+                        .font(.subheadline.weight(.semibold))
+                }
+                .foregroundStyle(Color.neonBlue)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Rectangle()
+                .fill(Color.appBorder)
+                .frame(width: 1, height: 24)
+
+            Button(action: onManage) {
+                HStack(spacing: 8) {
+                    Image(systemName: "slider.horizontal.3")
+                        .font(.subheadline.weight(.semibold))
+                    Text("Manage")
+                        .font(.subheadline.weight(.semibold))
+                }
+                .foregroundStyle(Color.appSecondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     private var statusBadge: some View {
@@ -275,20 +355,21 @@ private struct StudentCard: View {
             )
     }
 
-    private func infoRow(icon: String, label: String, value: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
+    private func infoRow(icon: String, primary: String, secondary: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
             Image(systemName: icon)
-                .font(.subheadline.weight(.semibold))
+                .font(.footnote)
                 .foregroundStyle(Color.neonBlue)
-                .frame(width: 20)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(label)
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(Color.appSecondary)
-                Text(value)
-                    .font(.subheadline)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(primary)
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.white)
+                Text(secondary)
+                    .font(.caption)
+                    .foregroundStyle(Color.appSecondary)
                     .multilineTextAlignment(.leading)
+                    .lineLimit(2)
             }
             Spacer()
         }

@@ -139,10 +139,10 @@ struct ParentMapTabView: View {
                 Circle()
                     .fill(Color.neonBlue.opacity(0.12))
                     .frame(width: 96, height: 96)
-                Image(systemName: "bus")
-                    .font(.system(size: 44, weight: .semibold))
+                Image(systemName: "bus.fill")
+                    .font(.system(size: 44))
                     .foregroundStyle(Color.neonBlue)
-                    .neonGlow(inner: 6, outer: 14)
+                    .neonGlow()
             }
 
             VStack(spacing: 6) {

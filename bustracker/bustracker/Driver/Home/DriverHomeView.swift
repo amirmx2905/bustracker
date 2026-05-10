@@ -31,12 +31,8 @@ struct DriverHomeView: View {
                     idleLayout
                 }
             }
-            .navigationTitle(isTripActive ? "" : "BusTracker — Driver")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar(isTripActive ? .hidden : .visible, for: .navigationBar)
+            .toolbar(.hidden, for: .navigationBar)
             .toolbar(isTripActive ? .hidden : .visible, for: .tabBar)
-            .toolbarBackground(Color.appBg, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
             .task {
                 cameraAuthorized = QRScanner.authorizationStatus() == .authorized
                 await tracker.resumeIfTripExists()

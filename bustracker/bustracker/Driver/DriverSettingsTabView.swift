@@ -55,6 +55,10 @@ struct DriverSettingsTabView: View {
         VStack(spacing: 16) {
             ZStack {
                 Circle()
+                    .fill(Color.neonBlue.opacity(0.07))
+                    .frame(width: 130, height: 130)
+                    .blur(radius: 20)
+                Circle()
                     .fill(Color.neonBlue.opacity(0.18))
                     .frame(width: 88, height: 88)
                 Circle()
@@ -63,6 +67,7 @@ struct DriverSettingsTabView: View {
                 Text(initials)
                     .font(.title2.weight(.bold))
                     .foregroundStyle(Color.neonBlue)
+                    .neonGlow(inner: 4, outer: 10)
             }
 
             VStack(spacing: 6) {
@@ -142,6 +147,7 @@ struct DriverSettingsTabView: View {
                 Image(systemName: icon)
                     .font(.title3)
                     .foregroundStyle(Color.neonBlue)
+                    .neonGlow(inner: 3, outer: 8)
                     .frame(width: 28)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
